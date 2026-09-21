@@ -6,19 +6,19 @@
     <key>CFBundleExecutable</key><string>fastcull</string>
     <key>CFBundleIdentifier</key><string>dev.fastcull.viewer</string>
     <key>CFBundleInfoDictionaryVersion</key><string>6.0</string>
-    <key>CFBundleName</key><string>FastCull</string>
-    <key>CFBundleDisplayName</key><string>FastCull</string>
+    <key>CFBundleName</key><string>ARW Sprint</string>
+    <key>CFBundleDisplayName</key><string>ARW Sprint</string>
     <key>CFBundlePackageType</key><string>APPL</string>
     <key>CFBundleShortVersionString</key><string>0.1.0</string>
     <key>CFBundleVersion</key><string>1</string>
-    <key>CFBundleIconFile</key><string>FastCull</string>
+    <key>CFBundleIconFile</key><string>ARW Sprint</string>
     <key>LSMinimumSystemVersion</key><string>10.15</string>
     <key>LSArchitecturePriority</key><array><string>x86_64</string></array>
     <key>LSRequiresNativeExecution</key><true/>
     <key>NSHighResolutionCapable</key><true/>
     <key>NSSupportsAutomaticGraphicsSwitching</key><true/>
-    <key>NSDesktopFolderUsageDescription</key><string>FastCull reads photos in folders you open and saves ratings to XMP sidecars.</string>
-    <key>NSRemovableVolumesUsageDescription</key><string>FastCull reads photos on drives you open and saves ratings to XMP sidecars.</string>
+    <key>NSDesktopFolderUsageDescription</key><string>ARW Sprint reads photos in folders you open and saves ratings to XMP sidecars.</string>
+    <key>NSRemovableVolumesUsageDescription</key><string>ARW Sprint reads photos on drives you open and saves ratings to XMP sidecars.</string>
     <key>NSPrincipalClass</key><string>NSApplication</string>
     <key>CFBundleDocumentTypes</key>
     <array>

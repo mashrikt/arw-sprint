@@ -1,8 +1,8 @@
-//! Reversible, no-clobber moves into a photo folder's `deleted` subdirectory.
+//! Reversible, no-clobber moves into a photo folder's `_Rejected` subdirectory.
 //! RAW and XMP bytes are never read or rewritten. Two-file moves use an
 //! exclusive sidecar-first rename with rollback if the RAW rename fails. Undo
 //! verifies the RAW identity and preserves its current paired metadata, including
-//! sidecars atomically edited or created while the photo was in `deleted`.
+//! sidecars atomically edited or created while the photo was in `_Rejected`.
 use std::{
     ffi::OsString,
     fmt, fs, io,
@@ -11,6 +11,13 @@ use std::{
 };
 
 const MAX_NAMES: usize = 10_000;
+pub(super) const REJECTED_FOLDER: &str = "_Rejected";
+
+pub(super) fn is_rejected_folder(path: &Path) -> bool {
+    path.file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| name.eq_ignore_ascii_case(REJECTED_FOLDER))
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct FileId {
@@ -190,7 +197,7 @@ fn destination_for(raw: &Path, folder: &Path, attempts: usize) -> io::Result<Pat
     }
     Err(io::Error::new(
         io::ErrorKind::AlreadyExists,
-        "No unused RAW/XMP filename pair is available in deleted",
+        "No unused RAW/XMP filename pair is available in _Rejected",
     ))
 }
 
@@ -244,25 +251,21 @@ fn prepare(raw: &Path) -> io::Result<MoveRecord> {
         .and_then(|extension| extension.to_str())
         .is_some_and(|extension| extension.eq_ignore_ascii_case("arw"))
     {
-        return Err(invalid("Only an ARW photograph can be moved to deleted"));
+        return Err(invalid("Only an ARW photograph can be moved to _Rejected"));
     }
     let identity = regular_file(raw)?;
     let parent = raw
         .parent()
         .filter(|path| !path.as_os_str().is_empty())
         .ok_or_else(|| invalid("photo needs a parent directory"))?;
-    if parent
-        .file_name()
-        .and_then(|name| name.to_str())
-        .is_some_and(|name| name.eq_ignore_ascii_case("deleted"))
-    {
+    if is_rejected_folder(parent) {
         return Err(invalid(
-            "This photograph is already in deleted; use Undo to restore it",
+            "This photograph is already in _Rejected; use Undo to restore it",
         ));
     }
     let parent_identity = directory(parent)?;
     let sidecar = matching_sidecar(raw)?;
-    let folder = parent.join("deleted");
+    let folder = parent.join(REJECTED_FOLDER);
     match fs::create_dir(&folder) {
         Ok(()) => {}
         Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
@@ -271,7 +274,7 @@ fn prepare(raw: &Path) -> io::Result<MoveRecord> {
     let folder_identity = directory(&folder)?;
     if folder_identity.device != parent_identity.device {
         return Err(invalid(
-            "deleted must be on the same filesystem as its photographs",
+            "_Rejected must be on the same filesystem as its photographs",
         ));
     }
     let destination = destination_for(raw, &folder, MAX_NAMES)?;
@@ -386,7 +389,7 @@ fn transfer(
         })
 }
 
-/// Move a RAW and its matching XMP into `deleted`, preserving existing files.
+/// Move a RAW and its matching XMP into `_Rejected`, preserving existing files.
 pub fn move_photo(path: &Path) -> Result<MoveRecord, MoveError> {
     move_with(path, &mut crate::platform::rename_exclusive)
 }
@@ -451,7 +454,7 @@ mod tests {
     impl Fixture {
         fn new(sidecar: bool) -> Self {
             let directory = std::env::temp_dir().join(format!(
-                "fastcull-deleted-{}-{}",
+                "fastcull-rejected-{}-{}",
                 std::process::id(),
                 NEXT.fetch_add(1, Ordering::Relaxed)
             ));
@@ -480,7 +483,7 @@ mod tests {
         assert_eq!(record.source, fixture.raw);
         assert_eq!(
             record.destination,
-            fixture.directory.join("deleted/DSC00001.ARW")
+            fixture.directory.join("_Rejected/DSC00001.ARW")
         );
         assert!(!record.source.exists());
         assert_eq!(fs::read(&record.destination).unwrap(), RAW);
@@ -494,6 +497,10 @@ mod tests {
             0o440
         );
         let sidecar = record.sidecar.as_ref().unwrap();
+        assert_eq!(
+            sidecar.destination,
+            fixture.directory.join("_Rejected/DSC00001.xmp")
+        );
         assert!(!sidecar.source.exists());
         assert_eq!(fs::read(&sidecar.destination).unwrap(), XMP);
         assert_eq!(
@@ -521,7 +528,7 @@ mod tests {
     #[test]
     fn either_existing_raw_or_sidecar_chooses_a_new_consistent_basename() {
         let fixture = Fixture::new(true);
-        let deleted = fixture.directory.join("deleted");
+        let deleted = fixture.directory.join("_Rejected");
         fs::create_dir(&deleted).unwrap();
         fs::write(deleted.join("DSC00001.ARW"), b"older raw").unwrap();
         fs::write(deleted.join("DSC00001-2.xmp"), b"orphan metadata").unwrap();
@@ -593,7 +600,7 @@ mod tests {
         assert_eq!(error.raw_path, Some(fixture.raw.clone()));
         assert_eq!(fs::read(&fixture.raw).unwrap(), RAW);
         assert_eq!(fs::read(fixture.raw.with_extension("xmp")).unwrap(), XMP);
-        assert!(!fixture.directory.join("deleted/DSC00001.xmp").exists());
+        assert!(!fixture.directory.join("_Rejected/DSC00001.xmp").exists());
     }
 
     #[test]
@@ -612,7 +619,7 @@ mod tests {
         assert_eq!(fs::read(&fixture.raw).unwrap(), RAW);
         assert_eq!(fs::read(fixture.raw.with_extension("xmp")).unwrap(), XMP);
         assert_eq!(
-            fs::read(fixture.directory.join("deleted/DSC00001.ARW")).unwrap(),
+            fs::read(fixture.directory.join("_Rejected/DSC00001.ARW")).unwrap(),
             b"external concurrent RAW"
         );
     }
@@ -638,7 +645,7 @@ mod tests {
         assert_eq!(error.raw_path, Some(fixture.raw.clone()));
         assert_eq!(
             error.sidecar_path,
-            Some(fixture.directory.join("deleted/DSC00001.xmp"))
+            Some(fixture.directory.join("_Rejected/DSC00001.xmp"))
         );
         assert!(error.to_string().contains("XMP rollback also failed"));
         assert_eq!(fs::read(&fixture.raw).unwrap(), RAW);
@@ -681,7 +688,7 @@ mod tests {
     }
 
     #[test]
-    fn failed_restore_of_raw_rolls_metadata_back_into_deleted() {
+    fn failed_restore_of_raw_rolls_metadata_back_into_rejected() {
         let fixture = Fixture::new(true);
         let record = move_photo(&fixture.raw).unwrap();
         let mut calls = 0;
@@ -702,19 +709,26 @@ mod tests {
     }
 
     #[test]
-    fn nested_deleted_moves_are_refused() {
+    fn nested_rejected_moves_are_refused() {
+        for name in ["_Rejected", "_REJECTED", "_rejected"] {
+            assert!(is_rejected_folder(Path::new(name)));
+            assert!(is_rejected_folder(&Path::new("/photos").join(name)));
+        }
+        for name in ["deleted", "Rejected", "_Rejected-2", "_Rejected/photos"] {
+            assert!(!is_rejected_folder(Path::new(name)));
+        }
         let fixture = Fixture::new(false);
         let record = move_photo(&fixture.raw).unwrap();
         assert!(move_photo(&record.destination)
             .unwrap_err()
             .to_string()
-            .contains("already in deleted"));
-        assert!(!fixture.directory.join("deleted/deleted").exists());
+            .contains("already in _Rejected"));
+        assert!(!fixture.directory.join("_Rejected/_Rejected").exists());
         assert_eq!(fs::read(&record.destination).unwrap(), RAW);
     }
 
     #[test]
-    fn undo_preserves_metadata_created_while_the_photo_was_in_deleted() {
+    fn undo_preserves_metadata_created_while_the_photo_was_in_rejected() {
         let fixture = Fixture::new(false);
         let record = move_photo(&fixture.raw).unwrap();
         fs::write(
@@ -788,10 +802,10 @@ mod tests {
         for kind in [
             "raw-link",
             "xmp-link",
-            "deleted-link",
+            "rejected-link",
             "raw-directory",
             "raw-socket",
-            "deleted-file",
+            "rejected-file",
         ] {
             let fixture = Fixture::new(false);
             let elsewhere = fixture.directory.join("elsewhere");
@@ -811,8 +825,8 @@ mod tests {
                     )
                     .unwrap();
                 }
-                "deleted-link" => {
-                    symlink(&elsewhere, fixture.directory.join("deleted")).unwrap();
+                "rejected-link" => {
+                    symlink(&elsewhere, fixture.directory.join("_Rejected")).unwrap();
                 }
                 "raw-directory" => {
                     fs::remove_file(&fixture.raw).unwrap();
@@ -822,8 +836,8 @@ mod tests {
                     fs::remove_file(&fixture.raw).unwrap();
                     socket = Some(UnixListener::bind(&fixture.raw).unwrap());
                 }
-                "deleted-file" => {
-                    fs::write(fixture.directory.join("deleted"), b"do not replace").unwrap();
+                "rejected-file" => {
+                    fs::write(fixture.directory.join("_Rejected"), b"do not replace").unwrap();
                 }
                 _ => unreachable!(),
             }
@@ -838,7 +852,7 @@ mod tests {
     #[test]
     fn broken_destination_symlinks_are_collisions_and_attempts_are_bounded() {
         let fixture = Fixture::new(false);
-        let deleted = fixture.directory.join("deleted");
+        let deleted = fixture.directory.join("_Rejected");
         fs::create_dir(&deleted).unwrap();
         symlink(deleted.join("missing"), deleted.join("DSC00001.ARW")).unwrap();
         fs::write(deleted.join("DSC00001-2.xmp"), b"occupied").unwrap();

@@ -1,6 +1,6 @@
-# Local deleted-folder workflow
+# Local rejected-folder workflow
 
-FastCull can move unwanted photos into a `deleted` subfolder beside the originals.
+ARW Sprint can move unwanted photos into a `_Rejected` subfolder beside the originals.
 This keeps them available for review and recovery without editing RAW data or
 assigning a rejection tag.
 
@@ -8,7 +8,7 @@ assigning a rejection tag.
 
 | Input | Action |
 | --- | --- |
-| Space / X | Move the displayed main RAW and matching XMP to `deleted`, then advance |
+| Space / X | Move the displayed main RAW and matching XMP to `_Rejected`, then advance |
 | Right | Next photo |
 | Left / Shift+Space | Previous photo |
 | S / + | Zoom in; held keys may repeat |
@@ -23,9 +23,9 @@ acts on the displayed main photo, independently of the filmstrip's scroll range
 and the pinned reference. Success selects the next surviving visible photo,
 or the previous survivor when removing the last one.
 
-**File → Open deleted Folder** opens moved photos for review. Local moves are
-refused within that folder to prevent nested `deleted/deleted` directories.
-**File → Move Rejected Photos to deleted…** confirms a batch of existing saved
+**File → Open _Rejected Folder** opens moved photos for review. Local moves are
+refused within that folder to prevent nested `_Rejected/_Rejected` directories.
+**File → Move Rejected Photos to _Rejected…** confirms a batch of existing saved
 `Rating=-1` photos. The separate macOS Trash commands retain their previous
 behavior; local undo does not undo Trash operations.
 
@@ -48,9 +48,9 @@ move or a guarantee against an uncooperative process replacing directories.
 
 Undo verifies the moved RAW's identity and refuses to replace a newly created
 original. It restores the current matching sidecar, preserving ratings edited
-while reviewing `deleted`, including a sidecar created after the move. Restored
+while reviewing `_Rejected`, including a sidecar created after the move. Restored
 ratings are read on the worker before updating active filters. Undo history is
-bounded to 100 actions during the running session; files remain in `deleted`
+bounded to 100 actions during the running session; files remain in `_Rejected`
 after quitting and can also be returned using Finder.
 
 Surviving CPU images are remapped by path to their new list indexes; main GPU

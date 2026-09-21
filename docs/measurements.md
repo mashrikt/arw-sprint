@@ -275,7 +275,7 @@ Raw outputs are retained locally in ignored `bench-results/`; photographs are
 not committed as test fixtures. Automated tests instead use tiny synthetic
 TIFF/JPEG data, nine observed A7 V metadata layouts, and a sparse multi-gigabyte
 reader that fails on any RAW sensor payload access.
-# Workflow feature verification — 2026-09-21
+# Workflow feature verification, 2026-09-21
 
 Zoom lock, temporary 100% peek, optional rating auto-advance, last-session
 restore, pinned comparison, and rating/reject undo were checked on the Intel

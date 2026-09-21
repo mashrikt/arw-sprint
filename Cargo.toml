@@ -3,7 +3,7 @@ name = "fastcull"
 version = "0.1.0"
 edition = "2021"
 rust-version = "1.86"
-description = "Fast Intel macOS photo culling with Sony ARW embedded previews"
+description = "ARW Sprint: fast Sony RAW photo culling for Intel Macs"
 license = "MIT"
 
 [features]

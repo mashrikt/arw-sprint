@@ -338,7 +338,7 @@ fn move_error(error: &MoveError) -> String {
         return error.to_string();
     }
     format!(
-        "{}; partial operation — RAW location: {}; XMP location: {}. Rating writes at the original path are blocked for safety.",
+        "{}; partial operation; RAW location: {}; XMP location: {}. Rating writes at the original path are blocked for safety.",
         error.message,
         error.raw_path.as_ref().map_or_else(|| "unknown or missing".into(), |path| path.display().to_string()),
         error.sidecar_path.as_ref().map_or_else(|| "unknown or absent".into(), |path| path.display().to_string()),
@@ -455,7 +455,7 @@ fn worker(shared: Arc<Shared>, wake: Arc<dyn Fn(IoEvent) + Send + Sync>) {
                         .failed
                         .contains_key(&path);
                     if failed_save {
-                        errors.push((path, "This photo has an unsaved rating. Retry that save before moving it to deleted.".into()));
+                        errors.push((path, "This photo has an unsaved rating. Retry that save before moving it to _Rejected.".into()));
                         continue;
                     }
                     match deleted::move_photo(&path) {
@@ -498,7 +498,7 @@ fn worker(shared: Arc<Shared>, wake: Arc<dyn Fn(IoEvent) + Send + Sync>) {
                         Ok(()) => {
                             moved_paths.remove(&record.source);
                             // Refresh only restored photos, including metadata
-                            // edited while reviewing the deleted folder. This
+                            // edited while reviewing the _Rejected folder. This
                             // keeps a completed star filter valid without a
                             // folder-wide sidecar rescan on every undo.
                             ratings.push((

@@ -1,8 +1,12 @@
-# FastCull desktop architecture
+# ARW Sprint desktop architecture
 
-FastCull supports Intel macOS (`x86_64-apple-darwin`) only. Its viewing path is
+ARW Sprint supports Intel macOS (`x86_64-apple-darwin`) only. Its viewing path is
 TIFF metadata → largest embedded JPEG → TurboJPEG RGBA → Metal texture.
 RAW sensor development is never part of navigation.
+
+The app and bundle are named ARW Sprint. Existing `fastcull` command names,
+bundle identifier, and session storage location remain stable so scripts and
+saved preferences continue to work.
 
 The desktop implementation now includes folder browsing, asynchronous loading,
 directional prefetch, CPU/GPU caches, viewport transforms, ratings/XMP, local file moves, EXIF,
@@ -109,7 +113,7 @@ The worker structure is deliberately small:
   native reduced-IDCT decoding bounds output to 192 pixels per side. The corpus's
   160×120 Sony thumbnail is decoded unchanged. Missing or
   unavailable thumbnails remain placeholders without a large-preview fallback.
-- One serialized I/O worker handles XMP saves, local `deleted`-folder moves and
+- One serialized I/O worker handles XMP saves, local `_Rejected`-folder moves and
   restores, bounded EXIF/XMP reads, and explicit rejected-photo/Trash batches.
   Pending logical edits outrank optional reads and
   remain FIFO so every edit can retain its authoritative previous rating.
@@ -206,7 +210,7 @@ are kept separate in [filmstrip-research.md](filmstrip-research.md).
 ## XMP, local moves, and Trash
 
 Space/X move the displayed main photo and any existing matching XMP into its
-directory's `deleted` subfolder. They preserve RAW/XMP bytes and existing ratings;
+directory's `_Rejected` subfolder. They preserve RAW/XMP bytes and existing ratings;
 they do not assign `Rating=-1`. S/D are incremental zoom-in/out aliases and can
 repeat, while Space/X act once per physical press. Shift+Space remains previous
 photo. The A preference controls only auto-advance after rating edits; successful
@@ -219,8 +223,8 @@ successfully moved path from its active list and invalidates index-based loading
 sessions. Existing destinations are not overwritten. Cmd+Z restores a local move
 with its sidecar in the current session; U/0 only clears rating metadata.
 
-File → Open deleted Folder uses the same app to review moved photos. Local moves
-from a `deleted` folder are refused to avoid nesting. The batch local-move command
+File → Open _Rejected Folder uses the same app to review moved photos. Local moves
+from a `_Rejected` folder are refused to avoid nesting. The batch local-move command
 collects existing XMP rejects and asks for confirmation. These local moves are
 separate from the existing macOS Trash workflow described below.
 The [local-move workflow](deleted-workflow.md) records collision/rollback handling,
@@ -276,7 +280,7 @@ fields in 433 files and six images with orientation 8.
 Winit handles window input/file drops; the small Objective-C bridge handles Finder/
 Dock open-document events. Muda supplies native menus and Cmd accelerators. The
 bundle script generates an icon, checks the Intel architecture, creates
-`dist/FastCull.app`, and applies a local ad hoc signature. It does not notarize or
+`dist/ARW Sprint.app`, and applies a local ad hoc signature. It does not notarize or
 install a distribution build.
 
 `FASTCULL_LOG=1` records parse/read/decode, CPU/GPU/prefetch hits, GPU submission
@@ -284,7 +288,7 @@ and completion, request-to-first-present-submission, and managed bytes. The last
 metric ends at presentation submission, not actual panel scanout. The read-only
 `--smoke-test` exercises navigation, coalesced skips, fit/100%, pan, resize,
 fullscreen, filters, locked zoom, temporary peek, and pinned comparison while
-capturing only FastCull's own frames. Capture readback disturbs timings.
+capturing only ARW Sprint's own frames. Capture readback disturbs timings.
 
 Tests cover parser bounds and sparse real layouts, navigator/generation behavior,
 lease/cache ownership, asynchronous loading, viewport orientation, XMP preservation,

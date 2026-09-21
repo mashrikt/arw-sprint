@@ -43,7 +43,7 @@ pub struct AppMenu {
 impl AppMenu {
     pub fn new() -> Result<Self, String> {
         let menu = Menu::new();
-        let application = Submenu::new("FastCull", true);
+        let application = Submenu::new("ARW Sprint", true);
         let file = Submenu::new("File", true);
         let edit = Submenu::new("Edit", true);
         let view = Submenu::new("View", true);
@@ -52,7 +52,7 @@ impl AppMenu {
         let help = Submenu::new("Help", true);
         application.append_items(&[
             &PredefinedMenuItem::about(None, Some(AboutMetadata {
-                name: Some("FastCull".into()), version: Some(env!("CARGO_PKG_VERSION").into()),
+                name: Some("ARW Sprint".into()), version: Some(env!("CARGO_PKG_VERSION").into()),
                 comments: Some("Fast Sony ARW culling for Intel Macs. Embedded JPEG previews; original RAW bytes are never edited.".into()),
                 ..Default::default()
             })),
@@ -73,23 +73,23 @@ impl AppMenu {
             };
         add(
             &application,
-            "Quit FastCull",
+            "Quit ARW Sprint",
             Command::Quit,
             Some(Code::KeyQ),
         )?;
         add(&file, "Open Folder…", Command::Open, Some(Code::KeyO))?;
-        add(&file, "Open deleted Folder", Command::OpenDeleted, None)?;
+        add(&file, "Open _Rejected Folder", Command::OpenDeleted, None)?;
         file.append(&PredefinedMenuItem::separator())
             .map_err(|e| e.to_string())?;
         add(
             &file,
-            "Move Current Photo to deleted (Space / X)",
+            "Move Current Photo to _Rejected (Space / X)",
             Command::MoveDeletedCurrent,
             None,
         )?;
         add(
             &file,
-            "Move Rejected Photos to deleted…",
+            "Move Rejected Photos to _Rejected…",
             Command::MoveDeletedRejected,
             None,
         )?;

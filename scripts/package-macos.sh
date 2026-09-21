@@ -5,12 +5,12 @@ set -euo pipefail
 project_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$project_dir"
 if [[ "$(uname -s)" != Darwin ]]; then
-    echo "FastCull packaging requires macOS and Apple's command line tools." >&2
+    echo "ARW Sprint packaging requires macOS and Apple's command line tools." >&2
     exit 1
 fi
 
 dist_dir="$project_dir/dist"
-bundle="$dist_dir/FastCull.app"
+bundle="$dist_dir/ARW Sprint.app"
 lock_dir="$dist_dir/.fastcull-package.lock"
 staging_root=""
 previous_bundle=""
@@ -57,11 +57,11 @@ fi
 # Stage on the destination volume so publication only renames directories.
 # install/codesign must never modify a bundle that a running app may map.
 staging_root="$(mktemp -d "$dist_dir/.fastcull-stage.XXXXXX")"
-staged_bundle="$staging_root/FastCull.app"
+staged_bundle="$staging_root/ARW Sprint.app"
 iconset="$project_dir/target/fastcull-icon.iconset"
 mkdir -p "$staged_bundle/Contents/MacOS" "$staged_bundle/Contents/Resources" "$project_dir/target/swift-module-cache"
 xcrun swift -module-cache-path "$project_dir/target/swift-module-cache" "$project_dir/packaging/make-icon.swift" "$iconset"
-iconutil --convert icns --output "$staged_bundle/Contents/Resources/FastCull.icns" "$iconset"
+iconutil --convert icns --output "$staged_bundle/Contents/Resources/ARW Sprint.icns" "$iconset"
 install -m 755 "$binary" "$staged_bundle/Contents/MacOS/fastcull"
 install -m 644 "$project_dir/packaging/Info.plist" "$staged_bundle/Contents/Info.plist"
 plutil -lint "$staged_bundle/Contents/Info.plist"
@@ -74,7 +74,7 @@ if [[ -e "$bundle" || -L "$bundle" ]]; then
         exit 1
     fi
     previous_root="$(mktemp -d "$dist_dir/.fastcull-previous.XXXXXX")"
-    previous_bundle="$previous_root/FastCull.app"
+    previous_bundle="$previous_root/ARW Sprint.app"
     mv "$bundle" "$previous_bundle"
 fi
 mv "$staged_bundle" "$bundle"

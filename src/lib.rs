@@ -1,7 +1,7 @@
 #![deny(unsafe_code)]
 
 #[cfg(not(all(target_os = "macos", target_arch = "x86_64")))]
-compile_error!("FastCull supports Intel macOS only; use --target x86_64-apple-darwin");
+compile_error!("ARW Sprint supports Intel macOS only; use --target x86_64-apple-darwin");
 
 #[cfg(feature = "desktop")]
 pub mod app;

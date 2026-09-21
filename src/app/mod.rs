@@ -419,7 +419,7 @@ impl App {
             }
             text
         } else {
-            "FastCull    Cmd+O: open folder".into()
+            "ARW Sprint    Cmd+O: open folder".into()
         };
         if self.scanning {
             text.push_str("    Scanning...");
@@ -474,7 +474,7 @@ impl App {
         }
         if let Some(window) = &self.window {
             window.set_title(&format!(
-                "FastCull — {}",
+                "ARW Sprint: {}",
                 path.as_ref()
                     .and_then(|p| p.file_name())
                     .map(|n| n.to_string_lossy().into_owned())
@@ -1090,7 +1090,7 @@ impl App {
             deletion::UndoAction::Moved(records) => {
                 self.begin_file_mutation(edit_id);
                 self.io.restore_deleted(self.session, edit_id, records);
-                self.message("Restoring photos from deleted...");
+                self.message("Restoring photos from _Rejected...");
                 return;
             }
         };
@@ -1412,7 +1412,7 @@ impl App {
                     return;
                 }
                 let choice = rfd::MessageDialog::new().set_title("Ratings could not be saved")
-                    .set_description(format!("{failures} photo(s) have unsaved ratings. Retry saving, quit without those changes, or keep FastCull open."))
+                    .set_description(format!("{failures} photo(s) have unsaved ratings. Retry saving, quit without those changes, or keep ARW Sprint open."))
                     .set_buttons(rfd::MessageButtons::YesNoCancelCustom("Retry".into(), "Quit Without Saving".into(), "Cancel".into())).show();
                 match choice {
                     rfd::MessageDialogResult::Custom(ref value) if value == "Retry" => {
@@ -1508,10 +1508,10 @@ impl App {
             Command::Quit => self.quit(),
             Command::OpenDeleted if !self.trash_busy => {
                 if let Some(folder) = &self.folder {
-                    if folder.file_name().is_some_and(|name| name.eq_ignore_ascii_case("deleted")) {
-                        self.message("Already viewing the deleted folder");
+                    if deleted::is_rejected_folder(folder) {
+                        self.message("Already viewing the _Rejected folder");
                     } else {
-                        self.open(folder.join("deleted"));
+                        self.open(folder.join(deleted::REJECTED_FOLDER));
                     }
                 }
             }
@@ -1545,7 +1545,7 @@ impl App {
                 self.deleted_batch = false;
                 self.trash_busy = true; self.io.collect_rejected(self.session, files); self.message("Checking saved rejects...");
             }
-            Command::Help => self.alert("FastCull shortcuts", "Right: next\nLeft / Shift+Space: previous\nTab: show / hide bottom thumbnails\nClick thumbnail: open it; scroll strip: browse without changing photo\nSpace / X: move photo + XMP to deleted, then advance\nU / 0: clear rating (does not restore a moved photo)\n1–5: stars    Cmd+Z: undo rating or move (last 100 actions this session)\nA: toggle auto-advance after assigning ratings\nCmd+Option+1–5: show only that star rating\nCmd+Option+0: show all photos\nCmd+Option+X: show rejected photos\nFilter menu: rated, unrated, or not rejected\nF: fullscreen    Z: fit / 100%\nL: keep zoom and position between photos\nHold P: temporary 100% peek at pointer; release to restore\nC: pin current photo / close comparison\nShift+C: replace pinned reference with current photo\nComparison: reference left, current right; linked zoom/pan\nS / +: zoom in    D / -: zoom out\nWheel / pinch: zoom    Drag: pan\nCmd+O: open folder    Cmd+Q: quit\nCmd+Delete: move current rejected photo to Trash\n\nRestores last photo and A/L preferences on launch.\n100% uses embedded-preview pixels; 256 MiB mode decodes at half resolution.\nFile menu: open deleted or move previously marked rejects.\nRatings save to XMP sidecars. Original RAW bytes are never edited.\nFolder scanning is not recursive.") ,
+            Command::Help => self.alert("ARW Sprint shortcuts", "Right: next\nLeft / Shift+Space: previous\nTab: show / hide bottom thumbnails\nClick thumbnail: open it; scroll strip: browse without changing photo\nSpace / X: move photo + XMP to _Rejected, then advance\nU / 0: clear rating (does not restore a moved photo)\n1–5: stars    Cmd+Z: undo rating or move (last 100 actions this session)\nA: toggle auto-advance after assigning ratings\nCmd+Option+1–5: show only that star rating\nCmd+Option+0: show all photos\nCmd+Option+X: show rejected photos\nFilter menu: rated, unrated, or not rejected\nF: fullscreen    Z: fit / 100%\nL: keep zoom and position between photos\nHold P: temporary 100% peek at pointer; release to restore\nC: pin current photo / close comparison\nShift+C: replace pinned reference with current photo\nComparison: reference left, current right; linked zoom/pan\nS / +: zoom in    D / -: zoom out\nWheel / pinch: zoom    Drag: pan\nCmd+O: open folder    Cmd+Q: quit\nCmd+Delete: move current rejected photo to Trash\n\nRestores last photo and A/L preferences on launch.\n100% uses embedded-preview pixels; 256 MiB mode decodes at half resolution.\nFile menu: open _Rejected or move previously marked rejects.\nRatings save to XMP sidecars. Original RAW bytes are never edited.\nFolder scanning is not recursive.") ,
             _ => {}
         }
     }
@@ -2364,7 +2364,7 @@ impl ApplicationHandler<Event> for App {
                 event_loop
                     .create_window(
                         Window::default_attributes()
-                            .with_title("FastCull")
+                            .with_title("ARW Sprint")
                             .with_inner_size(LogicalSize::new(1280.0, 850.0))
                             .with_min_inner_size(LogicalSize::new(480.0, 320.0)),
                     )
@@ -2400,9 +2400,9 @@ impl ApplicationHandler<Event> for App {
             Ok(())
         })();
         if let Err(error) = result {
-            eprintln!("FastCull startup: {error}");
+            eprintln!("ARW Sprint startup: {error}");
             self.fatal = Some(error.clone());
-            self.alert("FastCull could not start", &error);
+            self.alert("ARW Sprint could not start", &error);
             event_loop.exit();
         }
     }

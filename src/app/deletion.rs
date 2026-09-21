@@ -150,7 +150,7 @@ impl App {
         let id = self.rating_sequence;
         self.begin_file_mutation(id);
         self.io.move_deleted(self.session, id, paths);
-        self.message("Moving to deleted...");
+        self.message("Moving to _Rejected...");
     }
 
     pub(super) fn collect_deleted(&mut self) {
@@ -172,10 +172,10 @@ impl App {
         self.deleted_batch = false;
         match result {
             Ok(paths) if !paths.is_empty() => {
-                let choice = rfd::MessageDialog::new().set_title("Move rejected photos to deleted?")
-                    .set_description(format!("Move {} rejected photograph(s) and their XMP sidecars into the deleted folder? Cmd+Z can restore this move while FastCull stays open.", paths.len()))
-                    .set_buttons(rfd::MessageButtons::OkCancelCustom("Move to deleted".into(), "Cancel".into())).show();
-                if choice == rfd::MessageDialogResult::Custom("Move to deleted".into()) {
+                let choice = rfd::MessageDialog::new().set_title("Move rejected photos to _Rejected?")
+                    .set_description(format!("Move {} rejected photograph(s) and their XMP sidecars into the _Rejected folder? Cmd+Z can restore this move while ARW Sprint stays open.", paths.len()))
+                    .set_buttons(rfd::MessageButtons::OkCancelCustom("Move to _Rejected".into(), "Cancel".into())).show();
+                if choice == rfd::MessageDialogResult::Custom("Move to _Rejected".into()) {
                     self.move_paths_to_deleted(paths);
                     return;
                 }
@@ -227,7 +227,7 @@ impl App {
         self.start_rating_index();
         self.refresh_visible(preferred.as_deref());
         self.message(format!(
-            "Moved {count} photo(s) to deleted — Cmd+Z restores"
+            "Moved {count} photo(s) to _Rejected. Cmd+Z restores"
         ));
         if !errors.is_empty() {
             let details = errors
@@ -235,7 +235,7 @@ impl App {
                 .map(|(path, error)| format!("{}: {error}", path.display()))
                 .collect::<Vec<_>>()
                 .join("\n");
-            eprintln!("Move to deleted: {details}");
+            eprintln!("Move to _Rejected: {details}");
             self.message(format!(
                 "Moved {count}; {} photo(s) could not be moved",
                 errors.len()
@@ -256,7 +256,7 @@ impl App {
         }
         // The worker read these after restoring the current sidecar bytes.
         // Old source metadata may be absent after a folder reopen, or stale
-        // after rating the photo while reviewing deleted.
+        // after rating the photo while reviewing _Rejected.
         for (path, rating) in ratings {
             let info = self.info.entry(path.clone()).or_default();
             info.revision = 0;
@@ -308,9 +308,12 @@ impl App {
         self.remember_move(id, failed.into_iter().map(|(record, _)| record).collect());
         self.start_rating_index();
         self.refresh_visible(preferred.as_deref());
-        self.message(format!("Restored {} photo(s) from deleted", restored.len()));
+        self.message(format!(
+            "Restored {} photo(s) from _Rejected",
+            restored.len()
+        ));
         if !details.is_empty() {
-            eprintln!("Restore from deleted: {details}");
+            eprintln!("Restore from _Rejected: {details}");
             self.message("Some photos could not be restored; Cmd+Z retries");
             self.alert("Some photos could not be restored", &details);
         }
@@ -374,9 +377,9 @@ mod tests {
         let fixture = Fixture::new();
         let raw = fixture.raw("DSC2.ARW");
         let record = crate::app::deleted::move_photo(&raw).unwrap();
-        let folder = fixture.0.join("deleted");
+        let folder = fixture.0.join("_Rejected");
         let survivor = folder.join("DSC10.ARW");
-        fs::write(&survivor, b"another deleted photograph").unwrap();
+        fs::write(&survivor, b"another _Rejected photograph").unwrap();
         let before = vec![record.destination.clone(), survivor.clone()];
         crate::app::deleted::restore_photo(&record).unwrap();
         let listing = restore_listing(&before, Some(&folder), std::slice::from_ref(&record));
