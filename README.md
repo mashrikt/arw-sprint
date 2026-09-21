@@ -6,6 +6,8 @@ ARW Sprint runs on **Intel Macs with Metal graphics**. It has been tested with
 Sony A7 V `.ARW` files. Other Sony cameras and RAW modes remain unverified.
 Windows and Apple Silicon Macs are not supported.
 
+![ARW Sprint displaying a Sony RAW photo of a cheetah with the thumbnail filmstrip](docs/images/arw-sprint.png)
+
 ## Run the app
 
 If you already have a build, double-click **ARW Sprint.app** in the project's
