@@ -1,0 +1,431 @@
+{
+  "schema_version": 1,
+  "samples": [
+    {
+      "sample": "private-local-1",
+      "camera_model": "ILCE-7M5",
+      "file_size": 19615744,
+      "byte_order": "II",
+      "metadata_bytes_read": 1800,
+      "ifds": [
+        {
+          "name": "IFD0",
+          "offset": 8,
+          "entry_count": 19,
+          "next_ifd": 43690,
+          "tags": {
+            "00fe": 1,
+            "0103": 6,
+            "0110": "ILCE-7M5",
+            "0112": 1,
+            "014a": 145382,
+            "0201": 200866,
+            "0202": 260685,
+            "8769": 4544
+          }
+        },
+        {
+          "name": "IFD0/SubIFD0",
+          "offset": 145382,
+          "entry_count": 44,
+          "next_ifd": 0,
+          "tags": {
+            "00fe": 0,
+            "0100": 5120,
+            "0101": 3584,
+            "0103": 7,
+            "0106": 32803,
+            "0115": 1,
+            "0111": 1634304,
+            "0117": 17981296,
+            "0102": 14
+          }
+        },
+        {
+          "name": "IFD0/ExifIFD",
+          "offset": 4544,
+          "entry_count": 45,
+          "next_ifd": 0,
+          "tags": {
+            "927c": {
+              "offset": 5222,
+              "length": 38308
+            }
+          }
+        },
+        {
+          "name": "IFD0/next",
+          "offset": 43690,
+          "entry_count": 14,
+          "next_ifd": 145074,
+          "tags": {
+            "00fe": 1,
+            "0103": 6,
+            "0110": "ILCE-7M5",
+            "0112": 1,
+            "0201": 43964,
+            "0202": 8064
+          }
+        },
+        {
+          "name": "IFD0/next/next",
+          "offset": 145074,
+          "entry_count": 16,
+          "next_ifd": 0,
+          "tags": {
+            "00fe": 1,
+            "0100": 4608,
+            "0101": 3072,
+            "0102": [
+              8,
+              8,
+              8
+            ],
+            "0103": 7,
+            "0106": 6,
+            "0112": 1,
+            "0115": 3,
+            "0201": 462848,
+            "0202": 1170107
+          }
+        }
+      ],
+      "previews": [
+        {
+          "ifd": "IFD0",
+          "offset": 200866,
+          "length": 260685,
+          "soi": "ffd8",
+          "eoi": "ffd9",
+          "width": 1616,
+          "height": 1080,
+          "precision": 8,
+          "components": 3,
+          "sof_marker": "ffc0"
+        },
+        {
+          "ifd": "IFD0/next",
+          "offset": 43964,
+          "length": 8064,
+          "soi": "ffd8",
+          "eoi": "ffd9",
+          "width": 160,
+          "height": 120,
+          "precision": 8,
+          "components": 3,
+          "sof_marker": "ffc0"
+        },
+        {
+          "ifd": "IFD0/next/next",
+          "offset": 462848,
+          "length": 1170107,
+          "soi": "ffd8",
+          "eoi": "ffd9",
+          "width": 4608,
+          "height": 3072,
+          "precision": 8,
+          "components": 3,
+          "sof_marker": "ffc0"
+        }
+      ],
+      "provenance": "Private user-provided camera original, inspected locally with bounded seek/read; no image bytes or identifying EXIF retained.",
+      "validation": "TIFF references, JPEG SOF dimensions, and exact SOI/EOI bytes inspected; not an independent full JPEG decode.",
+      "expected_best_preview": {
+        "ifd": "IFD0/next/next",
+        "offset": 462848,
+        "length": 1170107,
+        "soi": "ffd8",
+        "eoi": "ffd9",
+        "width": 4608,
+        "height": 3072,
+        "precision": 8,
+        "components": 3,
+        "sof_marker": "ffc0"
+      }
+    },
+    {
+      "sample": "private-local-2",
+      "camera_model": "ILCE-7M5",
+      "file_size": 40611840,
+      "byte_order": "II",
+      "metadata_bytes_read": 1800,
+      "ifds": [
+        {
+          "name": "IFD0",
+          "offset": 8,
+          "entry_count": 19,
+          "next_ifd": 43692,
+          "tags": {
+            "00fe": 1,
+            "0103": 6,
+            "0110": "ILCE-7M5",
+            "0112": 1,
+            "014a": 145382,
+            "0201": 200866,
+            "0202": 283938,
+            "8769": 4544
+          }
+        },
+        {
+          "name": "IFD0/SubIFD0",
+          "offset": 145382,
+          "entry_count": 44,
+          "next_ifd": 0,
+          "tags": {
+            "00fe": 0,
+            "0100": 7168,
+            "0101": 5120,
+            "0103": 7,
+            "0106": 32803,
+            "0115": 1,
+            "0111": 2985984,
+            "0117": 37625808,
+            "0102": 14
+          }
+        },
+        {
+          "name": "IFD0/ExifIFD",
+          "offset": 4544,
+          "entry_count": 45,
+          "next_ifd": 0,
+          "tags": {
+            "927c": {
+              "offset": 5222,
+              "length": 38308
+            }
+          }
+        },
+        {
+          "name": "IFD0/next",
+          "offset": 43692,
+          "entry_count": 14,
+          "next_ifd": 145074,
+          "tags": {
+            "00fe": 1,
+            "0103": 6,
+            "0110": "ILCE-7M5",
+            "0112": 1,
+            "0201": 43966,
+            "0202": 6450
+          }
+        },
+        {
+          "name": "IFD0/next/next",
+          "offset": 145074,
+          "entry_count": 16,
+          "next_ifd": 0,
+          "tags": {
+            "00fe": 1,
+            "0100": 7008,
+            "0101": 4672,
+            "0102": [
+              8,
+              8,
+              8
+            ],
+            "0103": 7,
+            "0106": 6,
+            "0112": 1,
+            "0115": 3,
+            "0201": 487424,
+            "0202": 2496810
+          }
+        }
+      ],
+      "previews": [
+        {
+          "ifd": "IFD0",
+          "offset": 200866,
+          "length": 283938,
+          "soi": "ffd8",
+          "eoi": "ffd9",
+          "width": 1616,
+          "height": 1080,
+          "precision": 8,
+          "components": 3,
+          "sof_marker": "ffc0"
+        },
+        {
+          "ifd": "IFD0/next",
+          "offset": 43966,
+          "length": 6450,
+          "soi": "ffd8",
+          "eoi": "ffd9",
+          "width": 160,
+          "height": 120,
+          "precision": 8,
+          "components": 3,
+          "sof_marker": "ffc0"
+        },
+        {
+          "ifd": "IFD0/next/next",
+          "offset": 487424,
+          "length": 2496810,
+          "soi": "ffd8",
+          "eoi": "ffd9",
+          "width": 7008,
+          "height": 4672,
+          "precision": 8,
+          "components": 3,
+          "sof_marker": "ffc0"
+        }
+      ],
+      "provenance": "Private user-provided camera original, inspected locally with bounded seek/read; no image bytes or identifying EXIF retained.",
+      "validation": "TIFF references, JPEG SOF dimensions, and exact SOI/EOI bytes inspected; not an independent full JPEG decode.",
+      "expected_best_preview": {
+        "ifd": "IFD0/next/next",
+        "offset": 487424,
+        "length": 2496810,
+        "soi": "ffd8",
+        "eoi": "ffd9",
+        "width": 7008,
+        "height": 4672,
+        "precision": 8,
+        "components": 3,
+        "sof_marker": "ffc0"
+      }
+    },
+    {
+      "sample": "private-local-3",
+      "camera_model": "ILCE-7M5",
+      "file_size": 46649344,
+      "byte_order": "II",
+      "metadata_bytes_read": 1800,
+      "ifds": [
+        {
+          "name": "IFD0",
+          "offset": 8,
+          "entry_count": 19,
+          "next_ifd": 43692,
+          "tags": {
+            "00fe": 1,
+            "0103": 6,
+            "0110": "ILCE-7M5",
+            "0112": 1,
+            "014a": 145382,
+            "0201": 200866,
+            "0202": 185384,
+            "8769": 4544
+          }
+        },
+        {
+          "name": "IFD0/SubIFD0",
+          "offset": 145382,
+          "entry_count": 44,
+          "next_ifd": 0,
+          "tags": {
+            "00fe": 0,
+            "0100": 7168,
+            "0101": 5120,
+            "0103": 7,
+            "0106": 32803,
+            "0115": 1,
+            "0111": 4902912,
+            "0117": 41744032,
+            "0102": 14
+          }
+        },
+        {
+          "name": "IFD0/ExifIFD",
+          "offset": 4544,
+          "entry_count": 45,
+          "next_ifd": 0,
+          "tags": {
+            "927c": {
+              "offset": 5222,
+              "length": 38308
+            }
+          }
+        },
+        {
+          "name": "IFD0/next",
+          "offset": 43692,
+          "entry_count": 14,
+          "next_ifd": 145074,
+          "tags": {
+            "00fe": 1,
+            "0103": 6,
+            "0110": "ILCE-7M5",
+            "0112": 1,
+            "0201": 43966,
+            "0202": 6312
+          }
+        },
+        {
+          "name": "IFD0/next/next",
+          "offset": 145074,
+          "entry_count": 16,
+          "next_ifd": 0,
+          "tags": {
+            "00fe": 1,
+            "0100": 7008,
+            "0101": 4672,
+            "0102": [
+              8,
+              8,
+              8
+            ],
+            "0103": 7,
+            "0106": 6,
+            "0112": 1,
+            "0115": 3,
+            "0201": 389120,
+            "0202": 4513637
+          }
+        }
+      ],
+      "previews": [
+        {
+          "ifd": "IFD0",
+          "offset": 200866,
+          "length": 185384,
+          "soi": "ffd8",
+          "eoi": "ffd9",
+          "width": 1616,
+          "height": 1080,
+          "precision": 8,
+          "components": 3,
+          "sof_marker": "ffc0"
+        },
+        {
+          "ifd": "IFD0/next",
+          "offset": 43966,
+          "length": 6312,
+          "soi": "ffd8",
+          "eoi": "ffd9",
+          "width": 160,
+          "height": 120,
+          "precision": 8,
+          "components": 3,
+          "sof_marker": "ffc0"
+        },
+        {
+          "ifd": "IFD0/next/next",
+          "offset": 389120,
+          "length": 4513637,
+          "soi": "ffd8",
+          "eoi": "ffd9",
+          "width": 7008,
+          "height": 4672,
+          "precision": 8,
+          "components": 3,
+          "sof_marker": "ffc0"
+        }
+      ],
+      "provenance": "Private user-provided camera original, inspected locally with bounded seek/read; no image bytes or identifying EXIF retained.",
+      "validation": "TIFF references, JPEG SOF dimensions, and exact SOI/EOI bytes inspected; not an independent full JPEG decode.",
+      "expected_best_preview": {
+        "ifd": "IFD0/next/next",
+        "offset": 389120,
+        "length": 4513637,
+        "soi": "ffd8",
+        "eoi": "ffd9",
+        "width": 7008,
+        "height": 4672,
+        "precision": 8,
+        "components": 3,
+        "sof_marker": "ffc0"
+      }
+    }
+  ]
+}

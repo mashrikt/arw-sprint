@@ -1,0 +1,335 @@
+{
+  "schema_version": 1,
+  "samples": [
+    {
+      "sample_id": 8845,
+      "camera_model": "ILCE-7M5",
+      "capture_mode": "full frame compressed lossless",
+      "provenance": {
+        "raw_url": "https://raw.pixls.us/getfile.php/8845/nice/Sony - ILCE-7M5 - 14bit (4:3).ARW",
+        "metadata_url": "https://raw.pixls.us/getfile.php/8845/exif/full_compressed_lossless.ARW.exif.txt",
+        "license": "CC0-1.0",
+        "license_url": "https://creativecommons.org/publicdomain/zero/1.0/",
+        "published_raw_sha256": "8c35cd1ab0ca36b487ae50ae5e0333a8e967122700fce5678e1e5b97561896a4",
+        "retrieved_date": "2026-09-21",
+        "validation": "Metadata listing inspected only; camera original not downloaded or decoded."
+      },
+      "raw_subifd": {
+        "offset": 145382,
+        "width": 7168,
+        "height": 5120,
+        "compression_display": "JPEG",
+        "photometric_display": "Color Filter Array",
+        "bits_per_sample": 14,
+        "strip_offset": 5283840,
+        "strip_length": 38911408
+      },
+      "previews": [
+        {
+          "ifd": "IFD0",
+          "offset": 200866,
+          "length": 343945,
+          "width": 1616,
+          "height": 1080,
+          "dimension_source": "Sony PreviewImageSize metadata; not JPEG SOF verified"
+        },
+        {
+          "ifd": "IFD1",
+          "offset": 43992,
+          "length": 6445
+        },
+        {
+          "ifd": "IFD2",
+          "offset": 548864,
+          "length": 4734564,
+          "width": 7008,
+          "height": 4672,
+          "dimension_source": "IFD2 TIFF dimensions; not JPEG SOF verified"
+        }
+      ],
+      "expected_best_preview": {
+        "ifd": "IFD2",
+        "offset": 548864,
+        "length": 4734564,
+        "width": 7008,
+        "height": 4672,
+        "dimension_source": "IFD2 TIFF dimensions; not JPEG SOF verified"
+      }
+    },
+    {
+      "sample_id": 8846,
+      "camera_model": "ILCE-7M5",
+      "capture_mode": "full frame compressed hq",
+      "provenance": {
+        "raw_url": "https://raw.pixls.us/getfile.php/8846/nice/Sony - ILCE-7M5 - 14bit (3:2).ARW",
+        "metadata_url": "https://raw.pixls.us/getfile.php/8846/exif/full_compressed_HQ.ARW.exif.txt",
+        "license": "CC0-1.0",
+        "license_url": "https://creativecommons.org/publicdomain/zero/1.0/",
+        "published_raw_sha256": "4e3a99cbcf2a348decaf3ca68c5de22b7a05eaa590f4e9184735c1f9c45213a7",
+        "retrieved_date": "2026-09-21",
+        "validation": "Metadata listing inspected only; camera original not downloaded or decoded."
+      },
+      "raw_subifd": {
+        "offset": 145382,
+        "width": 7040,
+        "height": 4688,
+        "compression_display": "Next 2-bits RLE",
+        "photometric_display": "Color Filter Array",
+        "bits_per_sample": 14,
+        "strip_offset": 4796416,
+        "strip_length": 18432512
+      },
+      "previews": [
+        {
+          "ifd": "IFD0",
+          "offset": 200866,
+          "length": 333230,
+          "width": 1616,
+          "height": 1080,
+          "dimension_source": "Sony PreviewImageSize metadata; not JPEG SOF verified"
+        },
+        {
+          "ifd": "IFD1",
+          "offset": 43992,
+          "length": 6339
+        },
+        {
+          "ifd": "IFD2",
+          "offset": 536576,
+          "length": 4259249,
+          "width": 7008,
+          "height": 4672,
+          "dimension_source": "IFD2 TIFF dimensions; not JPEG SOF verified"
+        }
+      ],
+      "expected_best_preview": {
+        "ifd": "IFD2",
+        "offset": 536576,
+        "length": 4259249,
+        "width": 7008,
+        "height": 4672,
+        "dimension_source": "IFD2 TIFF dimensions; not JPEG SOF verified"
+      }
+    },
+    {
+      "sample_id": 8847,
+      "camera_model": "ILCE-7M5",
+      "capture_mode": "full frame compressed",
+      "provenance": {
+        "raw_url": "https://raw.pixls.us/getfile.php/8847/nice/Sony - ILCE-7M5 - 14bit (3:2).ARW",
+        "metadata_url": "https://raw.pixls.us/getfile.php/8847/exif/full_compressed.ARW.exif.txt",
+        "license": "CC0-1.0",
+        "license_url": "https://creativecommons.org/publicdomain/zero/1.0/",
+        "published_raw_sha256": "46d73475dfd8f96fd7e2f4d4a721a36cbbaba3d6ea95a4851809cd9d252b2a80",
+        "retrieved_date": "2026-09-21",
+        "validation": "Metadata listing inspected only; camera original not downloaded or decoded."
+      },
+      "raw_subifd": {
+        "offset": 145382,
+        "width": 7040,
+        "height": 4688,
+        "compression_display": "Next 2-bits RLE",
+        "photometric_display": "Color Filter Array",
+        "bits_per_sample": 14,
+        "strip_offset": 4808704,
+        "strip_length": 18504704
+      },
+      "previews": [
+        {
+          "ifd": "IFD0",
+          "offset": 200866,
+          "length": 333372,
+          "width": 1616,
+          "height": 1080,
+          "dimension_source": "Sony PreviewImageSize metadata; not JPEG SOF verified"
+        },
+        {
+          "ifd": "IFD1",
+          "offset": 43992,
+          "length": 6360
+        },
+        {
+          "ifd": "IFD2",
+          "offset": 536576,
+          "length": 4270440,
+          "width": 7008,
+          "height": 4672,
+          "dimension_source": "IFD2 TIFF dimensions; not JPEG SOF verified"
+        }
+      ],
+      "expected_best_preview": {
+        "ifd": "IFD2",
+        "offset": 536576,
+        "length": 4270440,
+        "width": 7008,
+        "height": 4672,
+        "dimension_source": "IFD2 TIFF dimensions; not JPEG SOF verified"
+      }
+    },
+    {
+      "sample_id": 8848,
+      "camera_model": "ILCE-7M5",
+      "capture_mode": "aps-c compressed lossless",
+      "provenance": {
+        "raw_url": "https://raw.pixls.us/getfile.php/8848/nice/Sony - ILCE-7M5 - 14bit (4:3).ARW",
+        "metadata_url": "https://raw.pixls.us/getfile.php/8848/exif/apsc_compressed_lossless.ARW.exif.txt",
+        "license": "CC0-1.0",
+        "license_url": "https://creativecommons.org/publicdomain/zero/1.0/",
+        "published_raw_sha256": "51ad709cba01a5f05e3c723b779f6b5fda8fa7b378494dbb40b4d3d3aa5494a4",
+        "retrieved_date": "2026-09-21",
+        "validation": "Metadata listing inspected only; camera original not downloaded or decoded."
+      },
+      "raw_subifd": {
+        "offset": 145382,
+        "width": 5120,
+        "height": 3584,
+        "compression_display": "JPEG",
+        "photometric_display": "Color Filter Array",
+        "bits_per_sample": 14,
+        "strip_offset": 3006464,
+        "strip_length": 19224032
+      },
+      "previews": [
+        {
+          "ifd": "IFD0",
+          "offset": 200866,
+          "length": 440228,
+          "width": 1616,
+          "height": 1080,
+          "dimension_source": "Sony PreviewImageSize metadata; not JPEG SOF verified"
+        },
+        {
+          "ifd": "IFD1",
+          "offset": 43992,
+          "length": 7374
+        },
+        {
+          "ifd": "IFD2",
+          "offset": 643072,
+          "length": 2359452,
+          "width": 4608,
+          "height": 3072,
+          "dimension_source": "IFD2 TIFF dimensions; not JPEG SOF verified"
+        }
+      ],
+      "expected_best_preview": {
+        "ifd": "IFD2",
+        "offset": 643072,
+        "length": 2359452,
+        "width": 4608,
+        "height": 3072,
+        "dimension_source": "IFD2 TIFF dimensions; not JPEG SOF verified"
+      }
+    },
+    {
+      "sample_id": 8849,
+      "camera_model": "ILCE-7M5",
+      "capture_mode": "aps-c compressed hq",
+      "provenance": {
+        "raw_url": "https://raw.pixls.us/getfile.php/8849/nice/Sony - ILCE-7M5 - 14bit (3:2).ARW",
+        "metadata_url": "https://raw.pixls.us/getfile.php/8849/exif/apcs_compressed_hq.ARW.exif.txt",
+        "license": "CC0-1.0",
+        "license_url": "https://creativecommons.org/publicdomain/zero/1.0/",
+        "published_raw_sha256": "c16cae99d26a2f8ad183d31a23823310a994aa058d55cfe56e4f82ba56865f57",
+        "retrieved_date": "2026-09-21",
+        "validation": "Metadata listing inspected only; camera original not downloaded or decoded."
+      },
+      "raw_subifd": {
+        "offset": 145382,
+        "width": 4640,
+        "height": 3088,
+        "compression_display": "Next 2-bits RLE",
+        "photometric_display": "Color Filter Array",
+        "bits_per_sample": 14,
+        "strip_offset": 2949120,
+        "strip_length": 8529408
+      },
+      "previews": [
+        {
+          "ifd": "IFD0",
+          "offset": 200866,
+          "length": 433383,
+          "width": 1616,
+          "height": 1080,
+          "dimension_source": "Sony PreviewImageSize metadata; not JPEG SOF verified"
+        },
+        {
+          "ifd": "IFD1",
+          "offset": 43992,
+          "length": 7329
+        },
+        {
+          "ifd": "IFD2",
+          "offset": 634880,
+          "length": 2312397,
+          "width": 4608,
+          "height": 3072,
+          "dimension_source": "IFD2 TIFF dimensions; not JPEG SOF verified"
+        }
+      ],
+      "expected_best_preview": {
+        "ifd": "IFD2",
+        "offset": 634880,
+        "length": 2312397,
+        "width": 4608,
+        "height": 3072,
+        "dimension_source": "IFD2 TIFF dimensions; not JPEG SOF verified"
+      }
+    },
+    {
+      "sample_id": 8850,
+      "camera_model": "ILCE-7M5",
+      "capture_mode": "aps-c compressed",
+      "provenance": {
+        "raw_url": "https://raw.pixls.us/getfile.php/8850/nice/Sony - ILCE-7M5 - 14bit (3:2).ARW",
+        "metadata_url": "https://raw.pixls.us/getfile.php/8850/exif/apsc_compressed.ARW.exif.txt",
+        "license": "CC0-1.0",
+        "license_url": "https://creativecommons.org/publicdomain/zero/1.0/",
+        "published_raw_sha256": "8315af2a9889709f4c836dbaadc23d226847e5a0630fda212a9f896d5fe0569f",
+        "retrieved_date": "2026-09-21",
+        "validation": "Metadata listing inspected only; camera original not downloaded or decoded."
+      },
+      "raw_subifd": {
+        "offset": 145382,
+        "width": 4640,
+        "height": 3088,
+        "compression_display": "Next 2-bits RLE",
+        "photometric_display": "Color Filter Array",
+        "bits_per_sample": 14,
+        "strip_offset": 3211264,
+        "strip_length": 8890880
+      },
+      "previews": [
+        {
+          "ifd": "IFD0",
+          "offset": 200866,
+          "length": 452187,
+          "width": 1616,
+          "height": 1080,
+          "dimension_source": "Sony PreviewImageSize metadata; not JPEG SOF verified"
+        },
+        {
+          "ifd": "IFD1",
+          "offset": 43992,
+          "length": 7283
+        },
+        {
+          "ifd": "IFD2",
+          "offset": 655360,
+          "length": 2555667,
+          "width": 4608,
+          "height": 3072,
+          "dimension_source": "IFD2 TIFF dimensions; not JPEG SOF verified"
+        }
+      ],
+      "expected_best_preview": {
+        "ifd": "IFD2",
+        "offset": 655360,
+        "length": 2555667,
+        "width": 4608,
+        "height": 3072,
+        "dimension_source": "IFD2 TIFF dimensions; not JPEG SOF verified"
+      }
+    }
+  ]
+}

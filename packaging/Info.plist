@@ -1,0 +1,49 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleDevelopmentRegion</key><string>en</string>
+    <key>CFBundleExecutable</key><string>fastcull</string>
+    <key>CFBundleIdentifier</key><string>dev.fastcull.viewer</string>
+    <key>CFBundleInfoDictionaryVersion</key><string>6.0</string>
+    <key>CFBundleName</key><string>FastCull</string>
+    <key>CFBundleDisplayName</key><string>FastCull</string>
+    <key>CFBundlePackageType</key><string>APPL</string>
+    <key>CFBundleShortVersionString</key><string>0.1.0</string>
+    <key>CFBundleVersion</key><string>1</string>
+    <key>CFBundleIconFile</key><string>FastCull</string>
+    <key>LSMinimumSystemVersion</key><string>10.15</string>
+    <key>LSArchitecturePriority</key><array><string>x86_64</string></array>
+    <key>LSRequiresNativeExecution</key><true/>
+    <key>NSHighResolutionCapable</key><true/>
+    <key>NSSupportsAutomaticGraphicsSwitching</key><true/>
+    <key>NSDesktopFolderUsageDescription</key><string>FastCull reads photos in folders you open and saves ratings to XMP sidecars.</string>
+    <key>NSRemovableVolumesUsageDescription</key><string>FastCull reads photos on drives you open and saves ratings to XMP sidecars.</string>
+    <key>NSPrincipalClass</key><string>NSApplication</string>
+    <key>CFBundleDocumentTypes</key>
+    <array>
+        <dict>
+            <key>CFBundleTypeName</key><string>Photo Folder</string>
+            <key>CFBundleTypeRole</key><string>Viewer</string>
+            <key>LSHandlerRank</key><string>Alternate</string>
+            <key>LSItemContentTypes</key><array><string>public.folder</string></array>
+        </dict>
+        <dict>
+            <key>CFBundleTypeName</key><string>Sony ARW Photograph</string>
+            <key>CFBundleTypeRole</key><string>Viewer</string>
+            <key>LSHandlerRank</key><string>Alternate</string>
+            <key>LSItemContentTypes</key><array><string>com.sony.arw-raw-image</string></array>
+        </dict>
+    </array>
+    <key>UTImportedTypeDeclarations</key>
+    <array>
+        <dict>
+            <key>UTTypeIdentifier</key><string>com.sony.arw-raw-image</string>
+            <key>UTTypeDescription</key><string>Sony ARW Photograph</string>
+            <key>UTTypeConformsTo</key><array><string>public.camera-raw-image</string></array>
+            <key>UTTypeTagSpecification</key>
+            <dict><key>public.filename-extension</key><array><string>arw</string></array></dict>
+        </dict>
+    </array>
+</dict>
+</plist>

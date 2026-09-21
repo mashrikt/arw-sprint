@@ -1,0 +1,11 @@
+/target/
+/dist/
+/.cargo-local/
+/samples/
+/bench-results/
+/fuzz/target/
+/fuzz/artifacts/
+/fuzz/corpus/
+*.ARW
+*.arw
+.DS_Store
