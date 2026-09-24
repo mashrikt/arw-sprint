@@ -187,6 +187,35 @@ decode of every file in that run. Capture readback disturbs timings, so these
 functional runs do not supply a new input-to-display benchmark or idle CPU/RSS
 measurement. Photos, captures, and local logs are excluded from the commit.
 
+## Viewing brightness check, 25 September 2026
+
+Viewing brightness is a global preference from -3 to +3 stops. The CPU computes
+the gain when it changes; the existing Metal shader multiplies linear RGB by
+that gain. Main photos, comparison references and thumbnails share the setting.
+Text and backgrounds remain neutral. It reuses the existing 48-byte transform
+buffer and cached textures, with no new image allocations or JPEG decoding.
+
+Validation on the same Intel Mac:
+
+- All 200 tests and strict Clippy passed, including real Metal shader output
+  checks for neutral, ±1 and ±3 stops, alpha, clipping, UI and reset.
+- Session tests covered old preference migrations, restart round-trips, bounded
+  values, coalesced saves and changes made before asynchronous restore finishes.
+- Desktop smoke runs used the 433-photo Sony A7 V folder and five synthetic gray
+  fixtures, at the default 512 MiB budget. Each run captured 49 workflow frames
+  plus six brightness frames. Navigation and comparison retained the adjustment.
+- Brightness shortcuts, key repeat, limits and reset left current-photo requests,
+  rating revisions and cached texture identities unchanged. Main and filmstrip
+  pixels responded, and reset restored their original pixels exactly.
+- All 55 gray captures had zero red-biased pixels. Background checks sampled 8×8
+  corners to avoid the comparison captions at (8,8); the older 32×32 checker
+  mistakes those captions for background changes.
+- The real folder's 433 ARWs and two XMPs retained their paths, inodes, sizes and
+  modification times.
+
+This checks rendering correctness and cache reuse, not added frame latency.
+Brightening still uses the embedded JPEG and cannot recover missing RAW detail.
+
 ## Scope and limits
 
 The image budget limits managed image allocations, not total process RSS. Driver

@@ -18,7 +18,8 @@ use std::{
 };
 
 const LEGACY_MAGIC: &[u8] = b"FASTCULL-SESSION\n1\n";
-const MAGIC: &[u8] = b"FASTCULL-SESSION\n2\n";
+const VERSION_TWO_MAGIC: &[u8] = b"FASTCULL-SESSION\n2\n";
+const MAGIC: &[u8] = b"FASTCULL-SESSION\n3\n";
 const MAX_PATH_BYTES: usize = 16 * 1024;
 const MAX_FILE_BYTES: usize = 64 * 1024;
 const SAVE_DELAY: Duration = Duration::from_millis(500);
@@ -33,6 +34,8 @@ pub struct SessionState {
     pub folder: Option<PathBuf>,
     pub zoom_locked: bool,
     pub auto_advance: bool,
+    /// Global display brightness in one-third-stop increments, from -9 to 9.
+    pub brightness_steps: i8,
 }
 
 impl Default for SessionState {
@@ -42,6 +45,7 @@ impl Default for SessionState {
             folder: None,
             zoom_locked: true,
             auto_advance: false,
+            brightness_steps: 0,
         }
     }
 }
@@ -61,6 +65,7 @@ struct Pending {
     photo: Option<PathBuf>,
     zoom_locked: Option<bool>,
     auto_advance: Option<bool>,
+    brightness_steps: Option<i8>,
     first_change: Option<Instant>,
     last_change: Option<Instant>,
 }
@@ -129,8 +134,13 @@ impl SessionWorker {
 
     /// Update only preferences the user changed. This preserves untouched
     /// saved values even when the initial asynchronous restore is still busy.
-    pub fn preferences(&self, zoom_locked: Option<bool>, auto_advance: Option<bool>) {
-        if zoom_locked.is_none() && auto_advance.is_none() {
+    pub fn preferences(
+        &self,
+        zoom_locked: Option<bool>,
+        auto_advance: Option<bool>,
+        brightness_steps: Option<i8>,
+    ) {
+        if zoom_locked.is_none() && auto_advance.is_none() && brightness_steps.is_none() {
             return;
         }
         let mut state = self.shared.state.lock().unwrap_or_else(|e| e.into_inner());
@@ -139,6 +149,9 @@ impl SessionWorker {
         }
         if let Some(value) = auto_advance {
             state.pending.auto_advance = Some(value);
+        }
+        if let Some(value) = brightness_steps {
+            state.pending.brightness_steps = Some(value.clamp(-9, 9));
         }
         state.pending.changed();
         self.shared.changed.notify_one();
@@ -236,6 +249,9 @@ fn worker(
         if let Some(auto_advance) = pending.auto_advance {
             updated.auto_advance = auto_advance;
         }
+        if let Some(brightness_steps) = pending.brightness_steps {
+            updated.brightness_steps = brightness_steps;
+        }
         needs_save |= updated != current;
         current = updated;
         let result = if needs_save {
@@ -285,9 +301,10 @@ fn encode(state: &SessionState) -> Result<Vec<u8>, String> {
             return Err("session folder must be the photo's parent".into());
         }
     }
-    let mut bytes = Vec::with_capacity(MAGIC.len() + 9 + photo.len() + folder.len());
+    let mut bytes = Vec::with_capacity(MAGIC.len() + 10 + photo.len() + folder.len());
     bytes.extend_from_slice(MAGIC);
     bytes.push(u8::from(state.zoom_locked) | (u8::from(state.auto_advance) << 1));
+    bytes.push(state.brightness_steps.clamp(-9, 9) as u8);
     bytes.extend_from_slice(&(photo.len() as u32).to_le_bytes());
     bytes.extend_from_slice(&(folder.len() as u32).to_le_bytes());
     bytes.extend_from_slice(photo);
@@ -296,11 +313,12 @@ fn encode(state: &SessionState) -> Result<Vec<u8>, String> {
 }
 
 fn decode(bytes: &[u8]) -> Result<SessionState, String> {
-    let header = MAGIC.len() + 9;
     let legacy = bytes.starts_with(LEGACY_MAGIC);
-    if bytes.len() > MAX_FILE_BYTES
-        || bytes.len() < header
-        || (!bytes.starts_with(MAGIC) && !legacy)
+    let version_two = bytes.starts_with(VERSION_TWO_MAGIC);
+    let current = bytes.starts_with(MAGIC);
+    let preferences_len = if current { 2 } else { 1 };
+    let header = MAGIC.len() + preferences_len + 8;
+    if bytes.len() > MAX_FILE_BYTES || bytes.len() < header || (!current && !version_two && !legacy)
     {
         return Err("invalid, oversized, or unsupported session file".into());
     }
@@ -308,7 +326,7 @@ fn decode(bytes: &[u8]) -> Result<SessionState, String> {
     if flags & !3 != 0 {
         return Err("unknown session preferences".into());
     }
-    let lengths = &bytes[MAGIC.len() + 1..header];
+    let lengths = &bytes[MAGIC.len() + preferences_len..header];
     let photo_len = u32::from_le_bytes(
         lengths[..4]
             .try_into()
@@ -333,9 +351,14 @@ fn decode(bytes: &[u8]) -> Result<SessionState, String> {
         folder: checked_path(&bytes[header + photo_len..])?,
         // Version1 did not distinguish its old default-off value from a choice.
         // Move all legacy records to the requested default-on behavior once;
-        // version2 continues to honor an explicit L-off preference.
+        // Versions 2 and later honor an explicit L-off preference.
         zoom_locked: legacy || flags & 1 != 0,
         auto_advance: flags & 2 != 0,
+        brightness_steps: if current {
+            (bytes[MAGIC.len() + 1] as i8).clamp(-9, 9)
+        } else {
+            0
+        },
     };
     // Validate the parent relationship too; this tiny allocation is bounded.
     encode(&state)?;
@@ -389,7 +412,7 @@ fn read_session_record(path: &Path) -> Result<(SessionState, bool), String> {
     file.take(MAX_FILE_BYTES as u64 + 1)
         .read_to_end(&mut bytes)
         .map_err(|error| error.to_string())?;
-    decode(&bytes).map(|state| (state, bytes.starts_with(LEGACY_MAGIC)))
+    decode(&bytes).map(|state| (state, !bytes.starts_with(MAGIC)))
 }
 
 struct Temporary(PathBuf);
@@ -486,6 +509,12 @@ mod tests {
             ..SessionState::default()
         }
     }
+    fn previous_record(state: &SessionState, magic: &[u8]) -> Vec<u8> {
+        let mut bytes = encode(state).unwrap();
+        bytes.remove(MAGIC.len() + 1);
+        bytes[..MAGIC.len()].copy_from_slice(magic);
+        bytes
+    }
 
     #[test]
     fn record_round_trips_non_utf8_paths_and_preferences_with_bounded_validation() {
@@ -494,13 +523,14 @@ mod tests {
         )));
         state.zoom_locked = true;
         state.auto_advance = true;
+        state.brightness_steps = 4;
         let bytes = encode(&state).unwrap();
         assert_eq!(decode(&bytes).unwrap(), state);
         for length in 0..bytes.len() {
             assert!(decode(&bytes[..length]).is_err());
         }
         let mut overflow = bytes.clone();
-        overflow[MAGIC.len() + 1..MAGIC.len() + 5].copy_from_slice(&u32::MAX.to_le_bytes());
+        overflow[MAGIC.len() + 2..MAGIC.len() + 6].copy_from_slice(&u32::MAX.to_le_bytes());
         assert!(decode(&overflow).is_err());
         let mut trailing = bytes;
         trailing.push(0);
@@ -513,22 +543,40 @@ mod tests {
     #[test]
     fn legacy_preferences_migrate_on_and_version_two_preserves_explicit_off() {
         assert!(SessionState::default().zoom_locked);
+        assert_eq!(SessionState::default().brightness_steps, 0);
         let mut state = with_photo(PathBuf::from("/photos/trip/photo.ARW"));
         state.auto_advance = true;
         for old_zoom in [false, true] {
             state.zoom_locked = old_zoom;
-            let mut legacy = encode(&state).unwrap();
-            legacy[..MAGIC.len()].copy_from_slice(LEGACY_MAGIC);
-            let migrated = decode(&legacy).unwrap();
+            let migrated = decode(&previous_record(&state, LEGACY_MAGIC)).unwrap();
             assert!(migrated.zoom_locked);
             assert_eq!(migrated.photo, state.photo);
             assert_eq!(migrated.folder, state.folder);
             assert!(migrated.auto_advance);
+            assert_eq!(migrated.brightness_steps, 0);
+            let migrated = decode(&previous_record(&state, VERSION_TWO_MAGIC)).unwrap();
+            assert_eq!(migrated, state);
         }
         state.zoom_locked = false;
         let current = encode(&state).unwrap();
         assert!(current.starts_with(MAGIC));
         assert_eq!(decode(&current).unwrap(), state);
+    }
+
+    #[test]
+    fn brightness_round_trips_and_clamps_without_erasing_other_preferences() {
+        let mut state = with_photo(PathBuf::from("/photos/trip/photo.ARW"));
+        state.auto_advance = true;
+        for steps in i8::MIN..=i8::MAX {
+            state.brightness_steps = steps;
+            let mut bytes = encode(&state).unwrap();
+            let mut expected = state.clone();
+            expected.brightness_steps = steps.clamp(-9, 9);
+            assert_eq!(decode(&bytes).unwrap(), expected);
+            // A malformed stored value also stays within the UI's safe range.
+            bytes[MAGIC.len() + 1] = steps as u8;
+            assert_eq!(decode(&bytes).unwrap(), expected);
+        }
     }
 
     #[test]
@@ -538,8 +586,7 @@ mod tests {
         let mut old = with_photo(directory.0.join("photo.ARW"));
         old.zoom_locked = false;
         old.auto_advance = true;
-        let mut bytes = encode(&old).unwrap();
-        bytes[..MAGIC.len()].copy_from_slice(LEGACY_MAGIC);
+        let bytes = previous_record(&old, LEGACY_MAGIC);
         fs::create_dir_all(path.parent().unwrap()).unwrap();
         fs::write(&path, &bytes).unwrap();
         let (send, events) = mpsc::channel();
@@ -567,7 +614,7 @@ mod tests {
         assert!(matches!(next(&events), SessionEvent::Saved(Ok(()))));
         assert!(fs::read(&path).unwrap().starts_with(MAGIC));
         assert!(read_session(&path).unwrap().zoom_locked);
-        worker.preferences(Some(false), None);
+        worker.preferences(Some(false), None, Some(3));
         worker.flush();
         assert!(matches!(next(&events), SessionEvent::Saved(Ok(()))));
         drop(worker);
@@ -575,7 +622,53 @@ mod tests {
         assert!(!saved.zoom_locked);
         assert_eq!(saved.photo, old.photo);
         assert!(saved.auto_advance);
+        assert_eq!(saved.brightness_steps, 3);
         assert_eq!(fs::read_dir(path.parent().unwrap()).unwrap().count(), 1);
+    }
+
+    #[test]
+    fn version_two_migration_merges_brightness_changed_before_restore_completes() {
+        let directory = TestDirectory::new();
+        let path = directory.session();
+        let mut old = with_photo(directory.0.join("photo.ARW"));
+        old.zoom_locked = false;
+        old.auto_advance = true;
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(&path, previous_record(&old, VERSION_TWO_MAGIC)).unwrap();
+        let (send, events) = mpsc::channel();
+        let (release, blocked) = mpsc::channel();
+        let blocked = Mutex::new(blocked);
+        let worker = SessionWorker::start(
+            Some(path.clone()),
+            Arc::new(move |event| {
+                let pause = matches!(&event, SessionEvent::Loaded { .. });
+                send.send(event).unwrap();
+                if pause {
+                    blocked
+                        .lock()
+                        .unwrap()
+                        .recv_timeout(Duration::from_secs(10))
+                        .unwrap();
+                }
+            }),
+        )
+        .unwrap();
+        let SessionEvent::Loaded {
+            state: Ok(state), ..
+        } = next(&events)
+        else {
+            panic!("version two load failed");
+        };
+        assert_eq!(state, old);
+        worker.preferences(None, None, Some(3));
+        worker.preferences(None, None, Some(-127));
+        worker.flush();
+        release.send(()).unwrap();
+        assert!(matches!(next(&events), SessionEvent::Saved(Ok(()))));
+        old.brightness_steps = -9;
+        assert_eq!(read_session(&path).unwrap(), old);
+        assert!(fs::read(&path).unwrap().starts_with(MAGIC));
+        drop(worker);
     }
 
     #[test]
@@ -610,7 +703,10 @@ mod tests {
         for n in 0..1000 {
             worker.remember(directory.0.join(format!("photo-{n}.ARW")));
         }
-        worker.preferences(Some(true), Some(true));
+        for steps in -9..=9 {
+            worker.preferences(None, None, Some(steps));
+        }
+        worker.preferences(Some(true), Some(true), None);
         release.send(()).unwrap();
         drop(worker);
         assert!(matches!(next(&events), SessionEvent::Saved(Ok(()))));
@@ -622,6 +718,7 @@ mod tests {
         assert_eq!(state.photo, Some(directory.0.join("photo-999.ARW")));
         assert_eq!(state.folder, Some(directory.0.clone()));
         assert!(state.zoom_locked && state.auto_advance);
+        assert_eq!(state.brightness_steps, 9);
         assert_eq!(
             fs::metadata(&path).unwrap().permissions().mode() & 0o777,
             0o600
@@ -740,6 +837,7 @@ mod tests {
         let path = directory.session();
         let initial = SessionState {
             zoom_locked: true,
+            brightness_steps: -3,
             ..SessionState::default()
         };
         write_session(&path, &initial).unwrap();
@@ -764,21 +862,24 @@ mod tests {
             next(&events),
             SessionEvent::Loaded { state: Ok(_), .. }
         ));
-        worker.preferences(None, Some(true));
-        worker.preferences(None, None);
+        worker.preferences(None, Some(true), None);
+        worker.preferences(None, None, None);
         worker.flush();
         release.send(()).unwrap();
         assert!(matches!(next(&events), SessionEvent::Saved(Ok(()))));
         let saved = read_session(&path).unwrap();
         assert!(saved.zoom_locked && saved.auto_advance);
-        worker.preferences(Some(false), None);
-        worker.preferences(None, Some(false));
+        assert_eq!(saved.brightness_steps, -3);
+        worker.preferences(Some(false), None, None);
+        worker.preferences(None, Some(false), None);
+        worker.preferences(None, None, Some(127));
         worker.flush();
         assert!(matches!(next(&events), SessionEvent::Saved(Ok(()))));
         assert_eq!(
             read_session(&path).unwrap(),
             SessionState {
                 zoom_locked: false,
+                brightness_steps: 9,
                 ..SessionState::default()
             }
         );

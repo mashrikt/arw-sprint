@@ -38,26 +38,71 @@ without changing the main photo, then click a thumbnail to open it.
 Scroll over the main photo to zoom and drag to pan. Zoom and position carry over
 to the next photo by default; **L** turns that behavior off or on.
 
-## Everyday shortcuts
+Photos too dark to judge? Press **]** to brighten or **[** to darken the view,
+in one-third-stop steps up to ±3 stops. **Backslash (\\)** resets it.
+Brightness applies to every photo, comparison and thumbnail, and stays set after
+restarting. It only changes the view, never your RAWs or XMP sidecars. It cannot
+recover details that are missing from the embedded JPEG.
+
+## All shortcuts
+
+### Browse and cull
 
 | Key | Action |
 | --- | --- |
-| Right | Next photo |
-| Left / Shift+Space | Previous photo |
+| Right Arrow | Next photo |
+| Left Arrow / Shift+Space | Previous photo |
 | Space / X | Move photo and sidecar to `_Rejected`, then advance |
 | 1 to 5 | Assign stars |
-| U / 0 | Clear rating or rejection metadata |
-| Cmd+Z | Undo a rating edit or local move during this session |
-| S / D | Zoom in / out |
+| U / 0 | Clear rating or rejection metadata; does not restore moved files |
+| Cmd+Z | Undo a rating edit or local move, up to 100 actions this session |
+| A | Toggle auto-advance after assigning or clearing a rating |
+| Cmd+Option+1 to 5 | Show only that exact star rating |
+| Cmd+Option+0 | Show all photos |
+| Cmd+Option+X | Show photos marked rejected in their XMP sidecars |
+| Cmd+Delete | Confirm moving the current XMP-rejected photo to macOS Trash |
+| Tab | Show / hide the filmstrip |
+| Scroll over the filmstrip | Browse thumbnails without changing the main photo |
+| Click a thumbnail | Open that photo |
+
+The rejected filter checks saved metadata in the current folder. To see files
+moved with Space or X, use **File → Open _Rejected Folder**. Trash actions leave
+XMP sidecars in place and cannot be undone with Cmd+Z.
+
+### View and app
+
+| Key or gesture | Action |
+| --- | --- |
+| S / + / = | Zoom in |
+| D / - / _ | Zoom out |
 | Z | Switch between fit and 100% |
 | L | Keep zoom and position across photos on / off |
 | Hold P | Peek at 100% under the pointer; release to return |
+| Mouse wheel / trackpad scroll over the photo | Zoom around the pointer |
+| Trackpad pinch | Zoom around the pointer |
+| Click and drag the photo | Pan while zoomed |
+| ] / [ | Brighten / darken all previews by one-third stop |
+| Backslash (\\) | Reset viewing brightness |
 | C | Pin the current photo for comparison / close comparison |
+| Shift+C | Replace the pinned reference with the current photo |
 | F | Toggle fullscreen |
-| Tab | Show / hide the filmstrip |
-| Cmd+O / Cmd+Q | Open a folder / quit |
+| Esc | Leave fullscreen; otherwise fit the photo to the window |
+| Cmd+O | Open a folder |
+| Cmd+Q | Save pending ratings and quit |
+| Cmd+M | Minimize the window |
+| Cmd+H | Hide ARW Sprint |
+| Cmd+Option+H | Hide other applications |
 
-The **Help → Keyboard Shortcuts** menu has the full list.
+In comparison, the reference is on the left and the current photo is on the
+right. Browsing, ratings and file moves affect the right photo; zoom and pan are linked.
+
+More menu actions:
+
+- **View → Fit / Fill / Actual Size (100%)** selects a display mode directly.
+- **Filter → Rated photos / Unrated photos / Not rejected** offers more filters.
+- **File → Move Rejected Photos to _Rejected… / Move Rejected Photos to Trash…**
+  confirms a batch move of photos with saved rejection metadata.
+- **Help → Keyboard Shortcuts** opens the in-app reference.
 
 ## Build from source
 
@@ -86,8 +131,8 @@ in Applications.
 - **Keep nearby photos ready.** Prefetch follows your browsing direction and keeps
   nearby photos in memory, up to a fixed budget, so going back and forth avoids
   loading them again when possible.
-- **Reuse Metal textures.** Zoom, pan, and resize reuse the uploaded image.
-  Background uploads help keep the window responsive during image transfers.
+- **Reuse Metal textures.** Zoom, pan, resize and viewing brightness reuse the
+  uploaded image. Background uploads help keep the window responsive during transfers.
 - **Cache the filmstrip.** Tiny embedded previews stay in a rolling cache.
   Scrolling loads missing cells without changing or reloading the main photo.
 - **Sleep when idle.** Workers wait for work or available memory, and the window

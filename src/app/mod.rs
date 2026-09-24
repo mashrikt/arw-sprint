@@ -113,8 +113,10 @@ struct App {
     restore_allowed: bool,
     zoom_preference_changed: bool,
     auto_preference_changed: bool,
+    brightness_preference_changed: bool,
     zoom_locked: bool,
     auto_advance: bool,
+    brightness_steps: i8,
     pinned: Option<(PathBuf, Arc<PreparedTexture>)>,
     rating_history: VecDeque<(u64, deletion::UndoAction)>,
     rating_sequence: u64,
@@ -254,8 +256,10 @@ pub fn run(options: Options) -> Result<(), String> {
         restore_allowed,
         zoom_preference_changed: false,
         auto_preference_changed: false,
+        brightness_preference_changed: false,
         zoom_locked: true,
         auto_advance: false,
+        brightness_steps: 0,
         pinned: None,
         rating_history: VecDeque::new(),
         rating_sequence: 0,
@@ -423,6 +427,13 @@ impl App {
         };
         if self.scanning {
             text.push_str("    Scanning...");
+        }
+        if self.brightness_steps != 0 {
+            // Keep the viewing adjustment visible even if long EXIF text is clipped.
+            text = format!(
+                "VIEW {:+.2} EV    {text}",
+                f32::from(self.brightness_steps) / 3.0
+            );
         }
         if self.zoom_locked {
             text.push_str("    ZOOM LOCK");
@@ -1195,6 +1206,8 @@ impl App {
             session.preferences(
                 self.zoom_preference_changed.then_some(self.zoom_locked),
                 self.auto_preference_changed.then_some(self.auto_advance),
+                self.brightness_preference_changed
+                    .then_some(self.brightness_steps),
             );
         }
     }
@@ -1210,6 +1223,12 @@ impl App {
                     }
                     if !self.auto_preference_changed {
                         self.auto_advance = state.auto_advance;
+                    }
+                    if !self.brightness_preference_changed {
+                        self.brightness_steps = state.brightness_steps;
+                        if let Some(renderer) = &mut self.renderer {
+                            renderer.set_brightness_stops(f32::from(self.brightness_steps) / 3.0);
+                        }
                     }
                     if self.restore_allowed {
                         self.restore_allowed = false;
@@ -1520,6 +1539,9 @@ impl App {
             Command::Filter(filter) => self.set_filter(filter),
             Command::Fullscreen => self.fullscreen(),
             Command::Filmstrip => self.toggle_filmstrip(),
+            Command::Brighten => self.set_brightness(self.brightness_steps.saturating_add(1)),
+            Command::Darken => self.set_brightness(self.brightness_steps.saturating_sub(1)),
+            Command::ResetBrightness => self.set_brightness(0),
             Command::ZoomLock => {
                 self.end_peek();
                 self.zoom_locked = !self.zoom_locked;
@@ -1545,7 +1567,7 @@ impl App {
                 self.deleted_batch = false;
                 self.trash_busy = true; self.io.collect_rejected(self.session, files); self.message("Checking saved rejects...");
             }
-            Command::Help => self.alert("ARW Sprint shortcuts", "Right: next\nLeft / Shift+Space: previous\nTab: show / hide bottom thumbnails\nClick thumbnail: open it; scroll strip: browse without changing photo\nSpace / X: move photo + XMP to _Rejected, then advance\nU / 0: clear rating (does not restore a moved photo)\n1–5: stars    Cmd+Z: undo rating or move (last 100 actions this session)\nA: toggle auto-advance after assigning ratings\nCmd+Option+1–5: show only that star rating\nCmd+Option+0: show all photos\nCmd+Option+X: show rejected photos\nFilter menu: rated, unrated, or not rejected\nF: fullscreen    Z: fit / 100%\nL: keep zoom and position between photos\nHold P: temporary 100% peek at pointer; release to restore\nC: pin current photo / close comparison\nShift+C: replace pinned reference with current photo\nComparison: reference left, current right; linked zoom/pan\nS / +: zoom in    D / -: zoom out\nWheel / pinch: zoom    Drag: pan\nCmd+O: open folder    Cmd+Q: quit\nCmd+Delete: move current rejected photo to Trash\n\nRestores last photo and A/L preferences on launch.\n100% uses embedded-preview pixels; 256 MiB mode decodes at half resolution.\nFile menu: open _Rejected or move previously marked rejects.\nRatings save to XMP sidecars. Original RAW bytes are never edited.\nFolder scanning is not recursive.") ,
+            Command::Help => self.alert("ARW Sprint shortcuts", "Right: next\nLeft / Shift+Space: previous\nTab: show / hide bottom thumbnails\nClick thumbnail: open it; scroll strip: browse without changing photo\nSpace / X: move photo + XMP to _Rejected, then advance\nU / 0: clear rating (does not restore a moved photo)\n1–5: stars    Cmd+Z: undo rating or move (last 100 actions this session)\nA: toggle auto-advance after assigning ratings\nCmd+Option+1–5: show only that star rating\nCmd+Option+0: show all photos\nCmd+Option+X: show rejected photos\nFilter menu: rated, unrated, or not rejected\nF: fullscreen    Z: fit / 100%\nL: keep zoom and position between photos\nHold P: temporary 100% peek at pointer; release to restore\nC: pin current photo / close comparison\nShift+C: replace pinned reference with current photo\nComparison: reference left, current right; linked zoom/pan\nS / +: zoom in    D / -: zoom out\n] / [: brighten / darken by 1/3 stop\nBackslash: reset viewing brightness\nBrightness carries across all photos and is saved on quit.\nWheel / pinch: zoom    Drag: pan\nCmd+O: open folder    Cmd+Q: quit\nCmd+Delete: move current rejected photo to Trash\n\nRestores last photo, brightness and A/L preferences on launch.\n100% uses embedded-preview pixels; 256 MiB mode decodes at half resolution.\nFile menu: open _Rejected or move previously marked rejects.\nRatings save to XMP sidecars. Viewing brightness never changes RAW or XMP.\nBrightening the JPEG cannot recover details missing from that preview.\nFolder scanning is not recursive.") ,
             _ => {}
         }
     }
@@ -1593,8 +1615,13 @@ impl App {
             Key::Character(character) => {
                 let character = character.to_ascii_lowercase();
                 // File moves, ratings and modes act once per press. Navigation
-                // and incremental zoom may repeat.
-                if repeat && !matches!(character.as_str(), "+" | "=" | "-" | "_" | "s" | "d") {
+                // and incremental zoom/brightness may repeat.
+                if repeat
+                    && !matches!(
+                        character.as_str(),
+                        "+" | "=" | "-" | "_" | "s" | "d" | "[" | "]"
+                    )
+                {
                     return;
                 }
                 match character.as_str() {
@@ -1628,11 +1655,29 @@ impl App {
                     }
                     "+" | "=" | "s" => self.zoom(1.25),
                     "-" | "_" | "d" => self.zoom(0.8),
+                    "]" => self.command(Command::Brighten),
+                    "[" => self.command(Command::Darken),
+                    "\\" => self.command(Command::ResetBrightness),
                     _ => {}
                 }
             }
             _ => {}
         }
+    }
+    fn set_brightness(&mut self, steps: i8) {
+        // A display preference, independent of navigation, zoom and XMP ratings.
+        // Mark even a neutral reset as user intent during asynchronous restore.
+        let steps = steps.clamp(-9, 9);
+        if self.brightness_preference_changed && self.brightness_steps == steps {
+            return;
+        }
+        self.brightness_steps = steps;
+        self.brightness_preference_changed = true;
+        if let Some(renderer) = &mut self.renderer {
+            renderer.set_brightness_stops(f32::from(self.brightness_steps) / 3.0);
+        }
+        self.persist_preferences();
+        self.status();
     }
     fn zoom(&mut self, factor: f64) {
         if let Some(renderer) = &mut self.renderer {
@@ -1777,6 +1822,77 @@ impl App {
             }
             result?;
             eprintln!("SMOKE ZOOM SHORTCUTS: S/D press+repeat changed transforms only; no main-photo requests or texture replacement");
+            Ok(())
+        }
+
+        fn brightness_shortcuts(app: &mut App, directory: &std::path::Path) -> Result<(), String> {
+            let identity = |app: &App| {
+                (
+                    app.current(),
+                    app.displayed.clone(),
+                    app.generation.load(Ordering::Acquire),
+                    app.requests,
+                    app.revision_sequence,
+                    app.textures
+                        .iter()
+                        .map(|(path, texture)| (path.clone(), Arc::as_ptr(texture) as usize))
+                        .collect::<Vec<_>>(),
+                    app.thumb_cache
+                        .iter()
+                        .map(|(path, texture)| (path.clone(), Arc::as_ptr(texture) as usize))
+                        .collect::<Vec<_>>(),
+                )
+            };
+            let expected = identity(app);
+            let modifiers = app.modifiers;
+            app.modifiers = ModifiersState::empty();
+            let result = (|| -> Result<(), String> {
+                for (key, count, steps, name) in [
+                    ("\\", 1, 0, "original"),
+                    ("]", 3, 3, "bright"),
+                    ("[", 6, -3, "dim"),
+                    ("\\", 1, 0, "reset"),
+                    ("]", 40, 9, "upper-limit"),
+                    ("[", 40, -9, "lower-limit"),
+                ] {
+                    for repeat in 0..count {
+                        app.key(Key::Character(key.into()), repeat > 0);
+                    }
+                    let renderer = app.renderer.as_mut().ok_or("no brightness renderer")?;
+                    if app.brightness_steps != steps
+                        || (renderer.brightness_stops() - f32::from(steps) / 3.0).abs() > 1e-6
+                    {
+                        return Err(
+                            "brightness shortcut/repeat/clamp did not reach expected value".into(),
+                        );
+                    }
+                    renderer.capture(&directory.join(format!("brightness-{name}.ppm")))?;
+                    if identity(app) != expected {
+                        return Err("brightness changed selection, load requests, ratings or cached textures".into());
+                    }
+                }
+                app.key(Key::Character("\\".into()), false);
+                for modifier in [
+                    ModifiersState::SUPER,
+                    ModifiersState::CONTROL,
+                    ModifiersState::ALT,
+                ] {
+                    app.modifiers = modifier;
+                    app.key(Key::Character("]".into()), false);
+                    if app.brightness_steps != 0 {
+                        return Err("modified brightness key was not ignored".into());
+                    }
+                }
+                app.modifiers = ModifiersState::empty();
+                // Leave +1 EV active for the following navigation/comparison frames.
+                for _ in 0..3 {
+                    app.command(Command::Brighten);
+                }
+                Ok(())
+            })();
+            app.modifiers = modifiers;
+            result?;
+            eprintln!("SMOKE BRIGHTNESS: shortcuts/repeat/clamps/reset pass; no load requests, rating edits or texture replacement");
             Ok(())
         }
 
@@ -1926,7 +2042,7 @@ impl App {
         let directory = smoke.directory.clone();
         // Keep frames 0–32 identical to the original workflow smoke. Later
         // captures wait for the visible strip, never synchronously for a worker.
-        if matches!(step, 33 | 35 | 36 | 37 | 40 | 41 | 42 | 43)
+        if matches!(step, 33 | 35 | 36 | 37 | 40 | 41 | 42 | 43 | 45)
             && self.filmstrip_visible
             && self.thumb_range.clone().any(|index| {
                 self.files.get(index).is_some_and(|path| {
@@ -2315,7 +2431,7 @@ impl App {
                         return Err("final Tab failed to hide strip".into());
                     }
                 }
-                _ => {
+                44 => {
                     let activity = self.thumbnails.activity();
                     if self.filmstrip_visible
                         || renderer.filmstrip_visible()
@@ -2335,6 +2451,37 @@ impl App {
                         activity.0,
                         activity.1
                     );
+                    self.command(Command::Fit);
+                    self.command(Command::ResetBrightness);
+                    self.command(Command::Filmstrip);
+                }
+                45 => {
+                    brightness_shortcuts(self, &directory)?;
+                    self.navigate(
+                        if self.navigator.index().unwrap_or(0) + 1 < self.files.len() {
+                            1
+                        } else {
+                            -1
+                        },
+                    );
+                }
+                46 | 47 => {
+                    if self.brightness_steps != 3
+                        || (renderer.brightness_stops() - 1.0).abs() > 1e-6
+                    {
+                        return Err("navigation/comparison reset viewing brightness".into());
+                    }
+                    if step == 46 {
+                        self.command(Command::Pin);
+                    } else {
+                        self.command(Command::ResetBrightness);
+                    }
+                }
+                _ => {
+                    if self.brightness_steps != 0 || renderer.brightness_stops() != 0.0 {
+                        return Err("viewing brightness reset failed after comparison".into());
+                    }
+                    eprintln!("SMOKE BRIGHTNESS CONTINUITY: navigation/comparison preserved +1 EV; reset restored neutral");
                     eprintln!("SMOKE PASS: folder={} files={} requests={} gpu_hits={} cpu_hits={} prefetch_hits={} managed={:.1}/{:.0}MiB", self.folder.as_ref().map(|p| p.display().to_string()).unwrap_or_default(), self.files.len(), self.requests, self.gpu_hits, self.cpu_hits, self.prefetch_hits, self.managed_used() as f64 /1048576.0, self.managed_limit() as f64 /1048576.0);
                     self.smoke = None;
                     self.quit();
@@ -2388,6 +2535,7 @@ impl ApplicationHandler<Event> for App {
             self.renderer = Some(renderer);
             if let Some(renderer) = &mut self.renderer {
                 renderer.set_preserve_view(self.zoom_locked);
+                renderer.set_brightness_stops(f32::from(self.brightness_steps) / 3.0);
             }
             self.window = Some(window);
             self.menu = Some(AppMenu::new()?);

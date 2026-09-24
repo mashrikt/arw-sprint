@@ -15,6 +15,9 @@ pub enum Command {
     Actual,
     Fullscreen,
     ZoomLock,
+    Brighten,
+    Darken,
+    ResetBrightness,
     AutoAdvance,
     Pin,
     ReplacePin,
@@ -111,6 +114,26 @@ impl AppMenu {
         add(&view, "Fill", Command::Fill, None)?;
         add(&view, "Actual Size (100%)", Command::Actual, None)?;
         add(&view, "Toggle Fullscreen", Command::Fullscreen, None)?;
+        view.append(&PredefinedMenuItem::separator())
+            .map_err(|e| e.to_string())?;
+        add(
+            &view,
+            "Increase Viewing Brightness (])",
+            Command::Brighten,
+            None,
+        )?;
+        add(
+            &view,
+            "Decrease Viewing Brightness ([)",
+            Command::Darken,
+            None,
+        )?;
+        add(
+            &view,
+            "Reset Viewing Brightness (\\)",
+            Command::ResetBrightness,
+            None,
+        )?;
         add(&help, "Keyboard Shortcuts", Command::Help, None)?;
         let undo = MenuItem::new(
             "Undo Rating / Move",

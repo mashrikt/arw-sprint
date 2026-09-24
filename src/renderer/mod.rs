@@ -1,5 +1,7 @@
 //! Minimal Metal rendering. JPEG uploads belong to `GpuUploader` on its worker.
 
+#[cfg(test)]
+mod brightness_tests;
 mod filmstrip;
 pub mod texture;
 pub mod viewport;
@@ -57,6 +59,8 @@ pub struct Renderer {
     orientation: u16,
     viewport: Viewport,
     preserve_view: bool,
+    brightness_stops: f32,
+    brightness_multiplier: f32,
     peek_restore: Option<(Viewport, u16)>,
     status: String,
     message: String,
@@ -302,6 +306,8 @@ impl Renderer {
             orientation: 1,
             viewport: Viewport::default(),
             preserve_view: true,
+            brightness_stops: 0.0,
+            brightness_multiplier: 1.0,
             peek_restore: None,
             status: "FastCull".into(),
             message: "Cmd+O to open a folder".into(),
@@ -334,6 +340,23 @@ impl Renderer {
 
     pub fn preserve_view(&self) -> bool {
         self.preserve_view
+    }
+
+    /// Display-only brightness, shared by every photo and retained across
+    /// navigation. Existing decoded pixels, textures, and sidecars are untouched.
+    pub fn set_brightness_stops(&mut self, stops: f32) {
+        let stops = bounded_brightness_stops(stops);
+        if self.brightness_stops == stops {
+            return;
+        }
+        self.brightness_stops = stops;
+        self.brightness_multiplier = stops.exp2();
+        self.filmstrip
+            .set_brightness_multiplier(&self.queue, self.brightness_multiplier);
+    }
+
+    pub fn brightness_stops(&self) -> f32 {
+        self.brightness_stops
     }
 
     /// The strip is opt-in; hiding it releases all retained thumbnail handles.
@@ -691,14 +714,22 @@ impl Renderer {
         self.queue.write_buffer(
             &self.image_uniform,
             0,
-            &transform_bytes(image_placement, self.orientation),
+            &photo_transform_bytes(
+                image_placement,
+                self.orientation,
+                self.brightness_multiplier,
+            ),
         );
         if let (Some(pane), Some((_, orientation))) = (reference_pane, &self.reference) {
             if let Some(viewport) = self.reference_viewport(pane) {
                 self.queue.write_buffer(
                     &self.reference_uniform,
                     0,
-                    &transform_bytes(viewport.transform_in([width, height], pane), *orientation),
+                    &photo_transform_bytes(
+                        viewport.transform_in([width, height], pane),
+                        *orientation,
+                        self.brightness_multiplier,
+                    ),
                 );
             }
         }
@@ -978,7 +1009,24 @@ fn transform_binding(
 }
 
 fn transform_bytes(placement: [f32; 4], orientation: u16) -> [u8; 48] {
-    let rows = viewport::orientation_rows(orientation);
+    photo_transform_bytes(placement, orientation, 1.0)
+}
+
+fn bounded_brightness_stops(stops: f32) -> f32 {
+    if stops.is_finite() {
+        stops.clamp(-3.0, 3.0)
+    } else {
+        0.0
+    }
+}
+
+fn photo_transform_bytes(
+    placement: [f32; 4],
+    orientation: u16,
+    brightness_multiplier: f32,
+) -> [u8; 48] {
+    let mut rows = viewport::orientation_rows(orientation);
+    rows[0][3] = brightness_multiplier;
     let mut bytes = [0u8; 48];
     for (slot, value) in bytes
         .chunks_exact_mut(4)

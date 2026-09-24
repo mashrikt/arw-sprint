@@ -1,7 +1,7 @@
 //! Bounded, cached filmstrip drawing. All photographs arrive already uploaded.
 
 use super::{
-    text_texture, texture, transform_binding, transform_bytes, viewport, GpuUploader,
+    photo_transform_bytes, text_texture, texture, transform_binding, viewport, GpuUploader,
     PreparedTexture, TextTexture, Viewport,
 };
 use std::sync::Arc;
@@ -176,6 +176,7 @@ struct Quad {
     uniform: wgpu::Buffer,
     transform: wgpu::BindGroup,
     placement: CachedPlacement,
+    brightness_multiplier: f32,
 }
 
 #[derive(Default)]
@@ -199,6 +200,7 @@ impl Quad {
             uniform,
             transform,
             placement: CachedPlacement::default(),
+            brightness_multiplier: 1.0,
         }
     }
 
@@ -212,12 +214,38 @@ impl Quad {
                 1.0 - (2.0 * pane.y as f32 + pane.height as f32) / surface[1] as f32,
             ],
             1,
+            1.0,
         );
     }
 
-    fn write(&mut self, queue: &wgpu::Queue, placement: [f32; 4], orientation: u16) {
-        if self.placement.changed(placement, orientation) {
-            queue.write_buffer(&self.uniform, 0, &transform_bytes(placement, orientation));
+    fn write(
+        &mut self,
+        queue: &wgpu::Queue,
+        placement: [f32; 4],
+        orientation: u16,
+        brightness_multiplier: f32,
+    ) {
+        if self.placement.changed(placement, orientation)
+            || self.brightness_multiplier != brightness_multiplier
+        {
+            self.brightness_multiplier = brightness_multiplier;
+            queue.write_buffer(
+                &self.uniform,
+                0,
+                &photo_transform_bytes(placement, orientation, brightness_multiplier),
+            );
+        }
+    }
+
+    fn set_brightness_multiplier(&mut self, queue: &wgpu::Queue, multiplier: f32) {
+        if self.brightness_multiplier == multiplier {
+            return;
+        }
+        self.brightness_multiplier = multiplier;
+        if self.placement.0.is_some() {
+            // Only the unused w component of the first UV row changes. Preserve
+            // all geometry, cached captions, and existing thumbnail textures.
+            queue.write_buffer(&self.uniform, 28, &multiplier.to_le_bytes());
         }
     }
 
@@ -290,6 +318,7 @@ pub(super) struct Filmstrip {
     layout: Layout,
     drawing: Option<Drawing>,
     dirty: bool,
+    brightness_multiplier: f32,
 }
 
 impl Filmstrip {
@@ -300,6 +329,16 @@ impl Filmstrip {
             layout: Layout::new([1, 1], 0, 1.0, false, 0),
             drawing: None,
             dirty: true,
+            brightness_multiplier: 1.0,
+        }
+    }
+
+    pub fn set_brightness_multiplier(&mut self, queue: &wgpu::Queue, multiplier: f32) {
+        self.brightness_multiplier = multiplier;
+        if let Some(drawing) = &mut self.drawing {
+            for slot in &mut drawing.slots {
+                slot.photo.set_brightness_multiplier(queue, multiplier);
+            }
         }
     }
 
@@ -437,6 +476,7 @@ impl Filmstrip {
                     &uploader.queue,
                     view.transform_in(surface, cell.preview),
                     item.orientation,
+                    self.brightness_multiplier,
                 );
             }
             slot.label_texture = Some(Arc::clone(&labels[index]));
