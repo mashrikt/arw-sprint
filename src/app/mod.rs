@@ -7,6 +7,7 @@ mod gestures;
 mod io;
 mod menu;
 mod mutation_test;
+mod navigation_bench;
 mod refresh;
 mod scan;
 mod session;
@@ -60,6 +61,8 @@ pub struct Options {
     pub cache_mb: usize,
     pub smoke_test: Option<PathBuf>,
     pub mutation_test: Option<PathBuf>,
+    pub navigation_bench_ms: Option<u64>,
+    pub navigation_bench_zoom: bool,
 }
 enum Event {
     Open(PathBuf),
@@ -185,11 +188,23 @@ struct App {
     cpu_hits: u64,
     prefetch_hits: u64,
     smoke: Option<Smoke>,
+    navigation_bench: Option<navigation_bench::NavigationBench>,
     mutation_test: Option<mutation_test::MutationTest>,
     fatal: Option<String>,
 }
 
 pub fn run(mut options: Options) -> Result<(), String> {
+    if let Some(ms) = options.navigation_bench_ms {
+        if !(20..=2000).contains(&ms)
+            || options.path.is_none()
+            || options.smoke_test.is_some()
+            || options.mutation_test.is_some()
+        {
+            return Err("navigation benchmark needs a photo folder, 20..2000ms, and no other diagnostic mode".into());
+        }
+    } else if options.navigation_bench_zoom {
+        return Err("navigation benchmark modifiers require --navigation-bench-ms".into());
+    }
     if options.mutation_test.is_some() && (options.path.is_some() || options.smoke_test.is_some()) {
         return Err(
             "--mutation-test creates its own fixtures; do not supply photos or --smoke-test".into(),
@@ -203,7 +218,9 @@ pub fn run(mut options: Options) -> Result<(), String> {
     if let Some(test) = &mutation_test {
         options.path = Some(test.folder.clone());
     }
-    let diagnostic = options.smoke_test.is_some() || mutation_test.is_some();
+    let diagnostic = options.smoke_test.is_some()
+        || mutation_test.is_some()
+        || options.navigation_bench_ms.is_some();
     let event_loop = EventLoop::<Event>::with_user_event()
         .with_default_menu(false)
         .build()
@@ -364,6 +381,9 @@ pub fn run(mut options: Options) -> Result<(), String> {
         gpu_hits: 0,
         cpu_hits: 0,
         prefetch_hits: 0,
+        navigation_bench: options
+            .navigation_bench_ms
+            .map(|ms| navigation_bench::NavigationBench::new(ms, options.navigation_bench_zoom)),
         smoke: options.smoke_test.map(|directory| Smoke {
             directory,
             step: 0,
@@ -1664,6 +1684,9 @@ impl App {
         }
     }
     fn command(&mut self, command: Command) {
+        if self.navigation_bench.is_some() && !matches!(command, Command::Quit) {
+            return;
+        }
         if self.quitting {
             return;
         }
@@ -2893,7 +2916,8 @@ impl ApplicationHandler<Event> for App {
     }
     fn user_event(&mut self, event_loop: &ActiveEventLoop, event: Event) {
         match event {
-            Event::Open(path) => self.open(path),
+            Event::Open(path) if self.navigation_bench.is_none() => self.open(path),
+            Event::Open(_) => {}
             Event::Scan(result) => self.scanned(result),
             Event::Load(event) => {
                 self.loaded(event);
@@ -2942,6 +2966,9 @@ impl ApplicationHandler<Event> for App {
                             if self.log {
                                 eprintln!("first_frame_submitted={:.2}ms (request to present submission; not display scanout)", self.requested_at.elapsed().as_secs_f64()*1000.0);
                             }
+                            if let Some(bench) = &mut self.navigation_bench {
+                                bench.presented(self.requested_at.elapsed());
+                            }
                             self.first_render = false;
                             if let (Some(session), Some(path)) =
                                 (&self.session_store, &self.displayed)
@@ -2953,9 +2980,9 @@ impl ApplicationHandler<Event> for App {
                     }
                 }
             }
-            WindowEvent::DroppedFile(path) => self.open(path),
+            WindowEvent::DroppedFile(path) if self.navigation_bench.is_none() => self.open(path),
             WindowEvent::ModifiersChanged(modifiers) => self.modifiers = modifiers.state(),
-            WindowEvent::KeyboardInput { event, .. } => {
+            WindowEvent::KeyboardInput { event, .. } if self.navigation_bench.is_none() => {
                 let key = event.key_without_modifiers();
                 if self.smoke.as_ref().is_some_and(|smoke| smoke.step >= 49) {
                     eprintln!(
@@ -2974,14 +3001,14 @@ impl ApplicationHandler<Event> for App {
                     self.key_action(action, key);
                 }
             }
-            WindowEvent::CursorMoved { position, .. } => {
+            WindowEvent::CursorMoved { position, .. } if self.navigation_bench.is_none() => {
                 self.cursor_moved([position.x, position.y])
             }
             WindowEvent::MouseInput {
                 state,
                 button: MouseButton::Left,
                 ..
-            } => {
+            } if self.navigation_bench.is_none() => {
                 self.drag_anchor =
                     if state == ElementState::Pressed && !self.filmstrip_click(self.cursor) {
                         Some(self.cursor)
@@ -2989,8 +3016,12 @@ impl ApplicationHandler<Event> for App {
                         None
                     };
             }
-            WindowEvent::MouseWheel { delta, .. } => self.scroll(delta),
-            WindowEvent::PinchGesture { delta, .. } => self.zoom((1.0 + delta).clamp(0.2, 5.0)),
+            WindowEvent::MouseWheel { delta, .. } if self.navigation_bench.is_none() => {
+                self.scroll(delta)
+            }
+            WindowEvent::PinchGesture { delta, .. } if self.navigation_bench.is_none() => {
+                self.zoom((1.0 + delta).clamp(0.2, 5.0))
+            }
             WindowEvent::Focused(false) => {
                 self.drag_anchor = None;
                 self.modifiers = ModifiersState::empty();
@@ -3003,6 +3034,7 @@ impl ApplicationHandler<Event> for App {
         }
     }
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+        navigation_bench::tick(self, event_loop);
         self.smoke_tick(event_loop);
         mutation_test::tick(self, event_loop);
         if self
@@ -3021,6 +3053,11 @@ impl ApplicationHandler<Event> for App {
             )
         } else {
             self.thumb_deadline
+        };
+        let deadline = match (&self.navigation_bench, deadline) {
+            (Some(bench), Some(other)) => Some(bench.next.min(other)),
+            (Some(bench), None) => Some(bench.next),
+            (None, other) => other,
         };
         event_loop.set_control_flow(deadline.map_or(ControlFlow::Wait, ControlFlow::WaitUntil));
     }

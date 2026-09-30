@@ -157,8 +157,8 @@ in Applications.
 - **Put your current photo first.** Loading and decoding happen on background
   workers. If you skip ahead quickly, the app follows your latest selection.
 - **Keep nearby photos ready.** Prefetch follows your browsing direction and keeps
-  nearby photos in memory, up to a fixed budget, so going back and forth avoids
-  loading them again when possible.
+  nearby photos in memory, up to a fixed budget. Useful completed previews stay
+  cached when you move on. Very fast browsing can still outrun decoding.
 - **Reuse Metal textures.** Zoom, pan, resize and viewing brightness reuse the
   uploaded image. Background uploads help keep the window responsive during transfers.
 - **Cache the filmstrip.** Tiny embedded previews stay in a rolling cache.
@@ -183,5 +183,6 @@ times; moving to a cached photo skips that step. Loading an uncached photo can
 still take more than 100 ms.
 
 See the [Intel audit](docs/intel-audit.md) for methods, limits, and graphics results.
+Burst tests and current limits: [rapid culling](docs/rapid-culling.md).
 More detail: [file moves and undo](docs/deleted-workflow.md),
 [architecture](docs/architecture.md), and [earlier measurements](docs/measurements.md).
