@@ -150,6 +150,116 @@ impl State {
             && self.wanted.contains(&task.index)
     }
 
+    /// The native decode cannot be interrupted. Keep useful pixels it has
+    /// already produced even if navigation paused new speculative work.
+    /// Earlier IO/allocation/decode checkpoints still use `relevant`.
+    fn accepts_completed(&self, task: Task) -> bool {
+        !self.shutdown
+            && task.session == self.session
+            && task.generation <= self.generation
+            && task.index < self.files.len()
+            && !self.gpu_cached.contains(&task.index)
+            && !(self.current_gpu_cached && self.target == Some(task.index))
+            && !self.cache.contains(task.index)
+            && (self.target == Some(task.index)
+                || (task.role == Role::Speculative && self.wanted.contains(&task.index)))
+    }
+
+    /// A completed neighbor may replace a more distant one, never the current
+    /// image or a nearer neighbor. Its allocation is already budgeted and any
+    /// foreground reservation can immediately evict this cache ownership.
+    fn admit_completed(
+        &mut self,
+        config: &LoaderConfig,
+        task: Task,
+        image: Arc<DecodedImage>,
+    ) -> bool {
+        if !self.accepts_completed(task) {
+            return false;
+        }
+        if self.target != Some(task.index) {
+            if image.bytes() > config.cpu_cache_bytes {
+                return false;
+            }
+            while self
+                .cache
+                .bytes()
+                .checked_add(image.bytes())
+                .is_none_or(|bytes| bytes > config.cpu_cache_bytes)
+            {
+                if self.cache.evict_lower_priority(&self.wanted, task.index) == 0 {
+                    return false;
+                }
+            }
+        }
+        self.cache
+            .insert(task.index, image, task.role == Role::Speculative);
+        self.cache.trim_to(config.cpu_cache_bytes, self.target);
+        if self.target == Some(task.index) {
+            self.current_available = true;
+        }
+        true
+    }
+
+    fn finish_load(
+        &mut self,
+        config: &LoaderConfig,
+        task: Task,
+        result: Result<(Arc<DecodedImage>, LoadTimings), LoadError>,
+    ) -> Option<LoaderEvent> {
+        self.inflight.remove(&(task.session, task.index));
+        if task.role == Role::Foreground {
+            self.foreground_running = false;
+        }
+        match result {
+            Ok((image, timings)) => {
+                if !self.admit_completed(config, task, image) {
+                    if task.role == Role::Speculative {
+                        self.rebuild_prefetch();
+                    }
+                    return None;
+                }
+                Some(LoaderEvent::Ready {
+                    session: self.session,
+                    index: task.index,
+                    generation: self.generation,
+                    timings,
+                    prefetched: task.role == Role::Speculative,
+                })
+            }
+            Err(_) if !self.relevant(task) => {
+                if task.role == Role::Speculative {
+                    self.rebuild_prefetch();
+                }
+                None
+            }
+            Err(LoadError::Failed(error)) => Some(LoaderEvent::Failed {
+                session: self.session,
+                index: task.index,
+                generation: self.generation,
+                error,
+            }),
+            Err(LoadError::Cancelled) => {
+                // A checkpoint can cancel X just before the user returns to X.
+                // The foreground worker may have consumed its new request while
+                // X was still marked in flight. Restore that request after the
+                // canceled owner retires, otherwise both workers can sleep.
+                if self.target == Some(task.index)
+                    && !self.cache.contains(task.index)
+                    && self.foreground.is_none()
+                {
+                    self.foreground = Some(Task {
+                        session: self.session,
+                        generation: self.generation,
+                        index: task.index,
+                        role: Role::Foreground,
+                    });
+                }
+                None
+            }
+        }
+    }
+
     fn set_files(&mut self, session: u64, files: Arc<Vec<PathBuf>>) {
         self.cache.rekey(&self.files, &files);
         self.session = session;
@@ -622,7 +732,9 @@ fn load(
                 continue;
             }
         };
-        checkpoint(shared, task)?;
+        // The decode has already paid its CPU cost. Completion admission under
+        // the state lock decides whether these pixels are still useful; using a
+        // strict speculative checkpoint here would throw away wanted neighbors.
         let image = DecodedImage::new(
             pixels,
             info.width,
@@ -644,42 +756,7 @@ fn worker(shared: Arc<Shared>, role: Role, mut decoder: Decoder) {
         let result = load(&shared, task, &path, &mut decoder);
         let event = {
             let mut state = lock(&shared.state);
-            state.inflight.remove(&(task.session, task.index));
-            if role == Role::Foreground {
-                state.foreground_running = false;
-            }
-            if !state.relevant(task) {
-                if role == Role::Speculative {
-                    state.rebuild_prefetch();
-                }
-                None
-            } else {
-                match result {
-                    Ok((image, timings)) => {
-                        let prefetched = role == Role::Speculative;
-                        state.cache.insert(task.index, image, prefetched);
-                        let keep = state.target;
-                        state.cache.trim_to(shared.config.cpu_cache_bytes, keep);
-                        if state.target == Some(task.index) {
-                            state.current_available = true;
-                        }
-                        Some(LoaderEvent::Ready {
-                            session: state.session,
-                            index: task.index,
-                            generation: state.generation,
-                            timings,
-                            prefetched,
-                        })
-                    }
-                    Err(LoadError::Failed(error)) => Some(LoaderEvent::Failed {
-                        session: state.session,
-                        index: task.index,
-                        generation: state.generation,
-                        error,
-                    }),
-                    Err(LoadError::Cancelled) => None,
-                }
-            }
+            state.finish_load(&shared.config, task, result)
         };
         shared.work.notify_all();
         if let Some(event) = event {
@@ -722,6 +799,201 @@ mod tests {
                 .collect(),
         );
         (config, state)
+    }
+
+    fn tiny_image(config: &LoaderConfig) -> Arc<DecodedImage> {
+        let lease = config.budget.try_reserve(4).unwrap();
+        Arc::new(DecodedImage::new(vec![17; 4], 1, 1, 1, 1, 1, lease).unwrap())
+    }
+
+    #[test]
+    fn completed_neighbor_survives_navigation_without_resuming_speculative_work() {
+        let (config, mut state) = state();
+        state.navigate(&config, 10, 1, Direction::Forward, true);
+        state.prefetch_paused = false;
+        let task = Task {
+            session: 1,
+            generation: 1,
+            index: 12,
+            role: Role::Speculative,
+        };
+        state.inflight.insert((task.session, task.index));
+        assert!(state.relevant(task));
+
+        // N+2 finishes after the user requests N+1. No more speculative IO or
+        // decoding may start, but the completed pixels remain useful.
+        state.navigate(&config, 11, 2, Direction::Forward, false);
+        assert!(!state.relevant(task));
+        let image = tiny_image(&config);
+        let original = Arc::as_ptr(&image);
+        assert!(matches!(
+            state.finish_load(&config, task, Ok((image, LoadTimings::default()))),
+            Some(LoaderEvent::Ready {
+                session: 1,
+                index: 12,
+                generation: 2,
+                prefetched: true,
+                ..
+            })
+        ));
+        assert!(state.prefetch_paused);
+        assert!(!state.current_available);
+        assert_eq!(state.foreground.unwrap().index, 11);
+        assert_eq!(Arc::as_ptr(&state.cache.get(12).unwrap()), original);
+        assert_eq!(config.budget.used(), 4);
+        assert!(matches!(
+            state.navigate(&config, 12, 3, Direction::Forward, false),
+            Some(LoaderEvent::Ready {
+                index: 12,
+                generation: 3,
+                prefetched: true,
+                timings: LoadTimings {
+                    cache_hit: true,
+                    ..
+                },
+                ..
+            })
+        ));
+        assert!(state.foreground.is_none());
+    }
+
+    #[test]
+    fn completed_neighbors_keep_session_window_generation_and_duplicate_guards() {
+        let (config, mut state) = state();
+        state.navigate(&config, 11, 2, Direction::Forward, false);
+        let task = Task {
+            session: 1,
+            generation: 1,
+            index: 12,
+            role: Role::Speculative,
+        };
+        assert!(state.accepts_completed(task));
+        for rejected in [
+            Task { session: 0, ..task },
+            Task {
+                generation: 3,
+                ..task
+            },
+            Task { index: 99, ..task },
+            Task { index: 100, ..task },
+            Task {
+                role: Role::Foreground,
+                ..task
+            },
+        ] {
+            assert!(!state.accepts_completed(rejected));
+        }
+        state.gpu_cached.insert(12);
+        assert!(!state.accepts_completed(task));
+        state.gpu_cached.clear();
+        state.cache.insert(12, tiny_image(&config), true);
+        assert!(!state.accepts_completed(task));
+        state.cache.clear();
+        state.navigate(&config, 1, 3, Direction::Backward, false);
+        assert!(!state.accepts_completed(task));
+        state.navigate(&config, 11, 4, Direction::Forward, false);
+        state.shutdown = true;
+        assert!(!state.accepts_completed(task));
+    }
+
+    #[test]
+    fn completed_neighbor_never_displaces_current_or_nearer_cached_pixels() {
+        let (mut config, mut state) = state();
+        config.cpu_cache_bytes = 8;
+        state.navigate(&config, 10, 2, Direction::Forward, false);
+        state.cache.insert(10, tiny_image(&config), false);
+        state.cache.insert(11, tiny_image(&config), true);
+        let distant = Task {
+            session: 1,
+            generation: 1,
+            index: 13,
+            role: Role::Speculative,
+        };
+        assert!(state
+            .finish_load(
+                &config,
+                distant,
+                Ok((tiny_image(&config), LoadTimings::default()))
+            )
+            .is_none());
+        assert!(state.cache.contains(10));
+        assert!(state.cache.contains(11));
+        assert!(!state.cache.contains(13));
+        assert_eq!(config.budget.used(), 8);
+
+        state.cache.remove(11);
+        state.cache.insert(15, tiny_image(&config), true);
+        let nearer = Task {
+            index: 11,
+            ..distant
+        };
+        assert!(matches!(
+            state.finish_load(
+                &config,
+                nearer,
+                Ok((tiny_image(&config), LoadTimings::default()))
+            ),
+            Some(LoaderEvent::Ready { index: 11, .. })
+        ));
+        assert!(state.cache.contains(10));
+        assert!(state.cache.contains(11));
+        assert!(!state.cache.contains(15));
+        assert_eq!(config.budget.used(), 8);
+    }
+
+    #[test]
+    fn canceled_prefetch_requeues_a_returned_target_after_inflight_handoff() {
+        let (config, mut state) = state();
+        state.navigate(&config, 10, 1, Direction::Forward, true);
+        state.prefetch_paused = false;
+        let task = *state.prefetch.front().unwrap();
+        state.inflight.insert((task.session, task.index));
+        state.navigate(&config, 30, 2, Direction::Forward, false);
+        assert!(!state.relevant(task)); // The worker's checkpoint cancels X.
+
+        // Before completion takes the state lock, navigation returns to X and
+        // the foreground worker consumes its request because X is still busy.
+        state.navigate(&config, task.index, 3, Direction::Backward, false);
+        let requested = state.foreground.take().unwrap();
+        assert!(state
+            .inflight
+            .contains(&(requested.session, requested.index)));
+        assert!(state
+            .finish_load(&config, task, Err(LoadError::Cancelled))
+            .is_none());
+        assert!(!state.inflight.contains(&(task.session, task.index)));
+        let retry = state.foreground.unwrap();
+        assert_eq!(retry.session, 1);
+        assert_eq!(retry.index, task.index);
+        assert_eq!(retry.generation, 3);
+        assert_eq!(retry.role, Role::Foreground);
+        assert!(state.relevant(retry));
+        assert!(!state.current_available);
+    }
+
+    #[test]
+    fn failed_or_obsolete_loads_do_not_create_retry_loops() {
+        let (config, mut state) = state();
+        state.navigate(&config, 10, 1, Direction::Forward, false);
+        let task = state.foreground.take().unwrap();
+        state.foreground_running = true;
+        assert!(matches!(
+            state.finish_load(&config, task, Err(LoadError::Failed("bad JPEG".into()))),
+            Some(LoaderEvent::Failed { index: 10, .. })
+        ));
+        assert!(state.foreground.is_none());
+        assert!(!state.foreground_running);
+
+        state.navigate(&config, 30, 2, Direction::Forward, false);
+        assert!(state
+            .finish_load(&config, task, Err(LoadError::Cancelled))
+            .is_none());
+        assert_eq!(state.foreground.unwrap().index, 30);
+        state.navigate(&config, 10, 3, Direction::Forward, true);
+        assert!(state
+            .finish_load(&config, task, Err(LoadError::Cancelled))
+            .is_none());
+        assert!(state.foreground.is_none());
     }
 
     #[test]
