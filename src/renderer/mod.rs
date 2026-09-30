@@ -632,6 +632,12 @@ impl Renderer {
         self.photo_details.set(content);
     }
 
+    /// Wake the event loop when text is ready. The callback must not synchronously
+    /// access a native window because shutdown joins this background worker.
+    pub fn set_photo_details_waker(&mut self, wake: Arc<dyn Fn() + Send + Sync>) {
+        self.photo_details.set_waker(wake);
+    }
+
     pub fn photo_details_visible(&self) -> bool {
         self.photo_details.visible()
     }

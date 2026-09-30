@@ -72,6 +72,7 @@ enum Event {
     Shortcuts(StoreEvent),
     Thumbnail(ThumbnailEvent),
     ThumbUploaded(upload::ThumbFinished),
+    PhotoDetailsReady,
 }
 #[derive(Default)]
 struct PhotoInfo {
@@ -2805,8 +2806,15 @@ impl App {
                 }
                 _ => {
                     self.check_photo_details()?;
-                    self.command(Command::PhotoDetails);
                     eprintln!("SMOKE EXIF CONTINUITY: navigation/comparison/resize pass; panel tracks displayed photograph");
+                    // Exercise closing with new raster work queued as well as
+                    // the idle worker. The invoking harness must require a clean
+                    // process exit, not only the SMOKE PASS message below.
+                    let renderer = self.renderer.as_mut().ok_or("no EXIF renderer")?;
+                    renderer.set_photo_details(Some(
+                        "Closing photo details\nStatus\tFinishing smoke check",
+                    ));
+                    renderer.render()?;
                     eprintln!("SMOKE PASS: folder={} files={} requests={} gpu_hits={} cpu_hits={} prefetch_hits={} managed={:.1}/{:.0}MiB", self.folder.as_ref().map(|p| p.display().to_string()).unwrap_or_default(), self.files.len(), self.requests, self.gpu_hits, self.cpu_hits, self.prefetch_hits, self.managed_used() as f64 /1048576.0, self.managed_limit() as f64 /1048576.0);
                     self.smoke = None;
                     self.quit();
@@ -2842,7 +2850,11 @@ impl ApplicationHandler<Event> for App {
                     )
                     .map_err(|e| e.to_string())?,
             );
-            let renderer = Renderer::new(Arc::clone(&window))?;
+            let mut renderer = Renderer::new(Arc::clone(&window))?;
+            let details_proxy = self.proxy.clone();
+            renderer.set_photo_details_waker(Arc::new(move || {
+                let _ = details_proxy.send_event(Event::PhotoDetailsReady);
+            }));
             let proxy = self.proxy.clone();
             let thumb_proxy = self.proxy.clone();
             self.uploader = Some(upload::UploadWorker::new(
@@ -2893,6 +2905,7 @@ impl ApplicationHandler<Event> for App {
             }
             Event::Thumbnail(event) => self.thumbnail_event(event),
             Event::ThumbUploaded(event) => self.thumbnail_uploaded(event),
+            Event::PhotoDetailsReady => self.redraw(),
             Event::Io(event) => self.io_event(event, event_loop),
             Event::Session(event) => self.session_event(event),
             Event::Shortcuts(event) => self.shortcut_event(event),

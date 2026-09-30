@@ -92,6 +92,7 @@ pub(super) struct PhotoDetails {
     card: Option<CardTexture>,
     shell: Option<CardTexture>,
     worker: Option<RasterWorker>,
+    wake: Option<Arc<dyn Fn() + Send + Sync>>,
     uniform: wgpu::Buffer,
     transform: wgpu::BindGroup,
     rasterizations: u64,
@@ -112,6 +113,7 @@ impl PhotoDetails {
             card: None,
             shell: None,
             worker: None,
+            wake: None,
             uniform,
             transform,
             rasterizations: 0,
@@ -139,6 +141,10 @@ impl PhotoDetails {
                 worker.cancel();
             }
         }
+    }
+
+    pub(super) fn set_waker(&mut self, wake: Arc<dyn Fn() + Send + Sync>) {
+        self.wake = Some(wake);
     }
 
     pub(super) fn content(&self) -> Option<&str> {
@@ -257,7 +263,10 @@ impl PhotoDetails {
         }
         if !self.card.as_ref().is_some_and(|card| card.key == key) && self.requested != Some(key) {
             if self.worker.is_none() {
-                match RasterWorker::new(Arc::clone(window)) {
+                let Some(wake) = self.wake.clone() else {
+                    return;
+                };
+                match RasterWorker::new(wake) {
                     Ok(worker) => self.worker = Some(worker),
                     Err(error) => {
                         eprintln!("photo details worker: {error}");
@@ -383,7 +392,7 @@ struct RasterWorker {
 }
 
 impl RasterWorker {
-    fn new(window: Arc<Window>) -> Result<Self, std::io::Error> {
+    fn new(wake: Arc<dyn Fn() + Send + Sync>) -> Result<Self, std::io::Error> {
         let state = Arc::new((Mutex::new(WorkerState::default()), Condvar::new()));
         let shared = Arc::clone(&state);
         let handle = thread::Builder::new()
@@ -447,7 +456,10 @@ impl RasterWorker {
                     }
                 };
                 if publish {
-                    window.request_redraw();
+                    // The callback sends an event, never accesses a Window.
+                    // Winit's macOS request_redraw and final Window drop can
+                    // synchronously dispatch to main, deadlocking main's join.
+                    wake();
                 }
             })?;
         Ok(Self {
