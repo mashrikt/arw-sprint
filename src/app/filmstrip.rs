@@ -35,6 +35,10 @@ fn distance_from_window(index: usize, visible: &std::ops::Range<usize>) -> usize
     }
 }
 
+fn serial_in_window(serial: u64, oldest: u64, newest: u64) -> bool {
+    serial.wrapping_sub(oldest) <= newest.wrapping_sub(oldest)
+}
+
 impl App {
     pub(super) fn scroll(&mut self, delta: MouseScrollDelta) {
         if self
@@ -76,6 +80,19 @@ impl App {
         }
         self.thumb_plan_sent = false;
         self.thumb_deadline = None;
+    }
+
+    /// Ordinary navigation may accept an older plan to keep the strip warm.
+    /// File mutations must also reject already-published results from before
+    /// the mutation, including failures that could poison a restored path.
+    pub(super) fn invalidate_thumbnail_work(&mut self) {
+        self.stop_thumbnail_work();
+        self.thumb_valid_from = self.thumb_serial;
+        self.thumb_retries = 0;
+    }
+
+    fn accepts_thumbnail_serial(&self, serial: u64) -> bool {
+        serial_in_window(serial, self.thumb_valid_from, self.thumb_serial)
     }
 
     pub(super) fn managed_used(&self) -> usize {
@@ -255,6 +272,7 @@ impl App {
     pub(super) fn arm_thumbnails(&mut self) {
         if !self.filmstrip_visible
             || self.quitting
+            || self.pending_deleted.is_some()
             || self.thumb_plan_sent
             || self.thumb_retries >= 3
             || self.files.is_empty()
@@ -269,6 +287,7 @@ impl App {
     pub(super) fn start_thumbnails(&mut self, grace_elapsed: bool) {
         if !self.filmstrip_visible
             || self.quitting
+            || self.pending_deleted.is_some()
             || self.thumb_plan_sent
             || self.thumb_retries >= 3
         {
@@ -317,6 +336,8 @@ impl App {
     pub(super) fn thumbnail_event(&mut self, event: ThumbnailEvent) {
         let valid = self.filmstrip_visible
             && event.session == self.session
+            && self.accepts_thumbnail_serial(event.serial)
+            && self.pending_deleted.is_none()
             && self.files.get(event.index) == Some(&event.path)
             && self.warm_thumbnails().contains(&event.index)
             && !self.quitting;
@@ -387,6 +408,8 @@ impl App {
     pub(super) fn thumbnail_uploaded(&mut self, event: upload::ThumbFinished) {
         let valid = self.filmstrip_visible
             && event.session == self.session
+            && self.accepts_thumbnail_serial(event.serial)
+            && self.pending_deleted.is_none()
             && self.files.get(event.index) == Some(&event.path)
             && self.warm_thumbnails().contains(&event.index)
             && !self.quitting;
@@ -446,6 +469,17 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn mutation_floor_rejects_stale_results_but_preserves_safe_late_warming() {
+        assert!(serial_in_window(8, 4, 10));
+        assert!(!serial_in_window(8, 11, 11));
+        assert!(serial_in_window(11, 11, 14));
+        assert!(!serial_in_window(15, 11, 14));
+        assert!(serial_in_window(u64::MAX, u64::MAX - 1, 1));
+        assert!(serial_in_window(0, u64::MAX - 1, 1));
+        assert!(!serial_in_window(u64::MAX - 2, u64::MAX - 1, 1));
+    }
 
     #[test]
     fn protected_thumbnail_pool_is_part_of_the_configured_total() {

@@ -113,6 +113,7 @@ enum Batch {
 }
 enum Mutation {
     Rating(PathBuf, Write),
+    ReconcileRestored(PathBuf),
     MoveDeleted {
         session: u64,
         op_id: u64,
@@ -248,6 +249,19 @@ impl IoWorker {
         self.shared.changed.notify_one();
     }
 
+    /// A manual folder refresh can discover photos returned through Finder.
+    /// Queue read-only identity checks before any later saves or moves. Partial
+    /// file-operation failures are never released by this reconciliation.
+    pub fn reconcile_restored(&self, folder: PathBuf) {
+        self.shared
+            .state
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .mutations
+            .push_back(Mutation::ReconcileRestored(folder));
+        self.shared.changed.notify_one();
+    }
+
     /// Replace the optional background rating index. Only sibling XMP files
     /// are read: RAW existence, EXIF, and JPEG decoding are not prerequisites.
     pub fn scan_ratings(&self, folder_epoch: u64, files: Arc<Vec<PathBuf>>) {
@@ -348,6 +362,9 @@ fn move_error(error: &MoveError) -> String {
 fn worker(shared: Arc<Shared>, wake: Arc<dyn Fn(IoEvent) + Send + Sync>) {
     let mut history = History::default();
     let mut moved_paths = BTreeMap::<PathBuf, String>::new();
+    // Only successfully completed moves can be reconciled after a Finder
+    // return. Partial failures retain their independent moved_paths protection.
+    let mut completed_moves = BTreeMap::<PathBuf, MoveRecord>::new();
     loop {
         let work = {
             let mut state = shared.state.lock().unwrap_or_else(|e| e.into_inner());
@@ -379,6 +396,18 @@ fn worker(shared: Arc<Shared>, wake: Arc<dyn Fn(IoEvent) + Send + Sync>) {
         };
         match work {
             Work::Stop => break,
+            Work::Mutation(Mutation::ReconcileRestored(folder)) => {
+                completed_moves.retain(|source, record| {
+                    if source.parent() == Some(folder.as_path())
+                        && deleted::externally_restored(record).is_ok()
+                    {
+                        moved_paths.remove(source);
+                        false
+                    } else {
+                        true
+                    }
+                });
+            }
             Work::Mutation(Mutation::Rating(path, write)) => {
                 let undo = matches!(write.operation, Edit::Undo);
                 let mut rating = None;
@@ -464,6 +493,7 @@ fn worker(shared: Arc<Shared>, wake: Arc<dyn Fn(IoEvent) + Send + Sync>) {
                                 record.source.clone(),
                                 format!("moved to {}", record.destination.display()),
                             );
+                            completed_moves.insert(record.source.clone(), record.clone());
                             records.push(record);
                         }
                         Err(error) => {
@@ -472,6 +502,7 @@ fn worker(shared: Arc<Shared>, wake: Arc<dyn Fn(IoEvent) + Send + Sync>) {
                             // can leave XMP elsewhere. Never recreate a second
                             // sidecar beside the source in that partial state.
                             if error.partial {
+                                completed_moves.remove(&path);
                                 moved_paths.insert(path.clone(), message.clone());
                             }
                             errors.push((path, message));
@@ -497,6 +528,7 @@ fn worker(shared: Arc<Shared>, wake: Arc<dyn Fn(IoEvent) + Send + Sync>) {
                     match deleted::restore_photo(&record) {
                         Ok(()) => {
                             moved_paths.remove(&record.source);
+                            completed_moves.remove(&record.source);
                             // Refresh only restored photos, including metadata
                             // edited while reviewing the _Rejected folder. This
                             // keeps a completed star filter valid without a
@@ -512,6 +544,7 @@ fn worker(shared: Arc<Shared>, wake: Arc<dyn Fn(IoEvent) + Send + Sync>) {
                         Err(error) => {
                             let message = move_error(&error);
                             if error.partial {
+                                completed_moves.remove(&record.source);
                                 moved_paths.insert(record.source.clone(), message.clone());
                             }
                             failed.push((record, message));
@@ -694,6 +727,147 @@ mod tests {
         assert!(errors.is_empty(), "move failed: {errors:?}");
         assert_eq!(records.len(), 1);
         records.pop().unwrap()
+    }
+
+    #[test]
+    fn finder_return_reconciliation_is_folder_scoped_and_precedes_later_edits_and_moves() {
+        for with_sidecar in [false, true] {
+            let directory = TestDirectory::new();
+            let other = TestDirectory::new();
+            let path = directory.raw();
+            if with_sidecar {
+                xmp::write_rating(&path, 3).unwrap();
+            }
+            let (events, receive) = mpsc::channel();
+            let io = IoWorker::new(Arc::new(move |event| {
+                events.send(event).unwrap();
+            }))
+            .unwrap();
+            io.move_deleted(1, 1, vec![path.clone()]);
+            let record = moved(&receive, 1);
+            fs::rename(&record.destination, &record.source).unwrap();
+            if let Some(sidecar) = &record.sidecar {
+                fs::rename(&sidecar.destination, &sidecar.source).unwrap();
+            }
+
+            io.reconcile_restored(other.0.clone());
+            io.move_deleted(1, 2, vec![path.clone()]);
+            assert!(
+                matches!(next(&receive), IoEvent::MovedDeleted { records, errors, .. }
+                if records.is_empty() && errors.len() == 1)
+            );
+
+            io.reconcile_restored(directory.0.clone());
+            io.save(1, path.clone(), 1, 5, 3);
+            io.move_deleted(1, 4, vec![path.clone()]);
+            assert!(matches!(
+                next(&receive),
+                IoEvent::Saved { result: Ok(()), .. }
+            ));
+            let moved_again = moved(&receive, 4);
+            assert_eq!(xmp::read_rating(&moved_again.destination).unwrap(), Some(5));
+            assert_eq!(
+                fs::read(&moved_again.destination).unwrap(),
+                b"synthetic RAW remains unchanged"
+            );
+            assert!(!path.exists());
+            drop(io);
+        }
+    }
+
+    #[test]
+    fn incomplete_or_replaced_finder_returns_keep_writes_and_moves_blocked() {
+        for replaced_raw in [false, true] {
+            let directory = TestDirectory::new();
+            let path = directory.raw();
+            xmp::write_rating(&path, 3).unwrap();
+            let (events, receive) = mpsc::channel();
+            let io = IoWorker::new(Arc::new(move |event| {
+                events.send(event).unwrap();
+            }))
+            .unwrap();
+            io.move_deleted(1, 1, vec![path.clone()]);
+            let record = moved(&receive, 1);
+            if replaced_raw {
+                let held = directory.0.join("held-original.ARW");
+                fs::rename(&record.destination, &held).unwrap();
+                fs::copy(&held, &record.source).unwrap();
+                let sidecar = record.sidecar.as_ref().unwrap();
+                fs::rename(&sidecar.destination, &sidecar.source).unwrap();
+            } else {
+                fs::rename(&record.destination, &record.source).unwrap();
+                // The original XMP remains in _Rejected.
+            }
+            io.reconcile_restored(directory.0.clone());
+            io.save(1, path.clone(), 1, 5, 2);
+            io.move_deleted(1, 3, vec![path.clone()]);
+            assert!(
+                matches!(next(&receive), IoEvent::Saved { result: Err(error), .. }
+                if error.contains("blocked until the photo is restored"))
+            );
+            assert!(
+                matches!(next(&receive), IoEvent::MovedDeleted { records, errors, .. }
+                if records.is_empty() && errors.len() == 1 && errors[0].1.contains("must be restored"))
+            );
+            let sidecar = record.sidecar.as_ref().unwrap();
+            let rating_path = if replaced_raw {
+                &record.source
+            } else {
+                &record.destination
+            };
+            assert_eq!(xmp::read_rating(rating_path).unwrap(), Some(3));
+            if !replaced_raw {
+                assert!(!sidecar.source.exists());
+            }
+            assert_eq!(
+                fs::read(&record.source).unwrap(),
+                b"synthetic RAW remains unchanged"
+            );
+            drop(io);
+        }
+    }
+
+    #[test]
+    fn reconciliation_never_releases_a_partial_restore_error() {
+        let directory = TestDirectory::new();
+        let path = directory.raw();
+        xmp::write_rating(&path, 3).unwrap();
+        let (events, receive) = mpsc::channel();
+        let io = IoWorker::new(Arc::new(move |event| {
+            events.send(event).unwrap();
+        }))
+        .unwrap();
+        io.move_deleted(1, 1, vec![path.clone()]);
+        let record = moved(&receive, 1);
+        fs::rename(&record.destination, &record.source).unwrap();
+        io.restore_deleted(1, 2, vec![record.clone()]);
+        assert!(
+            matches!(next(&receive), IoEvent::RestoredDeleted { restored, failed, .. }
+            if restored.is_empty() && failed.len() == 1 && failed[0].1.contains("partial operation"))
+        );
+
+        let sidecar = record.sidecar.as_ref().unwrap();
+        fs::rename(&sidecar.destination, &sidecar.source).unwrap();
+        deleted::externally_restored(&record).unwrap();
+        io.reconcile_restored(directory.0.clone());
+        io.move_deleted(1, 3, vec![path.clone()]);
+        assert!(
+            matches!(next(&receive), IoEvent::MovedDeleted { records, errors, .. }
+            if records.is_empty() && errors.len() == 1 && errors[0].1.contains("partial operation"))
+        );
+        // An explicit verified undo, unlike a scan, can resolve that protection.
+        io.restore_deleted(1, 4, vec![record]);
+        assert!(
+            matches!(next(&receive), IoEvent::RestoredDeleted { restored, failed, .. }
+            if restored.len() == 1 && failed.is_empty())
+        );
+        io.save(1, path.clone(), 1, 5, 5);
+        assert!(matches!(
+            next(&receive),
+            IoEvent::Saved { result: Ok(()), .. }
+        ));
+        drop(io);
+        assert_eq!(xmp::read_rating(&path).unwrap(), Some(5));
     }
 
     #[test]

@@ -3,7 +3,7 @@
 //! Only explicit photo navigation should call `reveal`. Routine redraws and
 //! thumbnail completions must not recenter a window the user has scrolled.
 
-use std::ops::Range;
+use std::{collections::HashMap, ops::Range, path::PathBuf};
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct FilmstripWindow {
@@ -26,6 +26,41 @@ impl FilmstripWindow {
             self.start.min(self.len - self.capacity)
         };
         self.range() != previous
+    }
+
+    /// Retain the first visible photograph when a folder's contents change.
+    /// If it disappeared, anchor to the next surviving old photograph, then
+    /// the nearest previous survivor. A full trailing page takes precedence
+    /// over keeping an anchor at the left edge. This never reveals selection.
+    /// Returns whether the numeric range changed, not whether its contents did.
+    ///
+    /// Build a borrowed index once so even a large batch removal remains
+    /// linear in the folder sizes rather than repeatedly searching the list.
+    pub fn reconcile_paths(
+        &mut self,
+        previous: &[PathBuf],
+        current: &[PathBuf],
+        capacity: usize,
+    ) -> bool {
+        let previous_range = self.range();
+        let old_start = self.start.min(previous.len());
+        let positions: HashMap<_, _> = current
+            .iter()
+            .enumerate()
+            .map(|(index, path)| (path.as_path(), index))
+            .collect();
+        let anchor = previous[old_start..]
+            .iter()
+            .chain(previous[..old_start].iter().rev())
+            .find_map(|path| positions.get(path.as_path()).copied())
+            .unwrap_or(0);
+        self.synchronize(current.len(), capacity);
+        self.start = if self.capacity == 0 {
+            0
+        } else {
+            anchor.min(self.len - self.capacity)
+        };
+        self.range() != previous_range
     }
 
     pub fn range(&self) -> Range<usize> {
@@ -81,6 +116,77 @@ mod tests {
         let mut window = FilmstripWindow::default();
         window.synchronize(len, capacity);
         window
+    }
+
+    fn paths(names: &[&str]) -> Vec<PathBuf> {
+        names.iter().map(PathBuf::from).collect()
+    }
+
+    #[test]
+    fn list_changes_before_the_window_keep_the_same_leftmost_photo() {
+        let original = paths(&["a", "b", "c", "d", "e", "f"]);
+        let inserted = paths(&["a", "b", "b1", "c", "d", "e", "f"]);
+        let mut strip = window(original.len(), 2);
+        strip.scroll(3);
+        assert!(strip.reconcile_paths(&original, &inserted, 2));
+        assert_eq!(strip.range(), 4..6);
+        assert_eq!(inserted[strip.range().start], PathBuf::from("d"));
+
+        let removed = paths(&["b", "c", "d", "e", "f"]);
+        assert!(strip.reconcile_paths(&inserted, &removed, 2));
+        assert_eq!(strip.range(), 2..4);
+        assert_eq!(removed[strip.range().start], PathBuf::from("d"));
+    }
+
+    #[test]
+    fn a_removed_leftmost_photo_anchors_to_the_next_survivor() {
+        let original = paths(&["a", "b", "c", "d", "e", "f", "g"]);
+        let removed = paths(&["a", "b", "e", "f", "g"]);
+        let mut strip = window(original.len(), 2);
+        strip.scroll(2);
+        // The numeric range stays put, but now starts with the first survivor.
+        assert!(!strip.reconcile_paths(&original, &removed, 2));
+        assert_eq!(strip.range(), 2..4);
+        assert_eq!(removed[strip.range().start], PathBuf::from("e"));
+    }
+
+    #[test]
+    fn removing_the_tail_falls_back_to_previous_survivor_and_clamps() {
+        let original = paths(&["a", "b", "c", "d", "e", "f"]);
+        let removed = paths(&["a", "b", "c", "d"]);
+        let mut strip = window(original.len(), 2);
+        strip.scroll(4);
+        assert!(strip.reconcile_paths(&original, &removed, 2));
+        // The nearest survivor is d, but a full final page includes c as well.
+        assert_eq!(strip.range(), 2..4);
+    }
+
+    #[test]
+    fn an_existing_anchor_clamps_to_a_full_final_page() {
+        let original = paths(&["a", "b", "c", "d", "e", "f", "g"]);
+        let removed = paths(&["a", "b", "c", "d", "e"]);
+        let mut strip = window(original.len(), 3);
+        strip.scroll(4);
+        assert!(strip.reconcile_paths(&original, &removed, 3));
+        assert_eq!(strip.range(), 2..5);
+        assert!(strip.range().contains(&4));
+    }
+
+    #[test]
+    fn removing_every_photo_and_repopulating_is_safe() {
+        let original = paths(&["a", "b", "c", "d"]);
+        let mut strip = window(original.len(), 2);
+        strip.scroll(2);
+        assert!(strip.reconcile_paths(&original, &[], 2));
+        assert_eq!(strip.range(), 0..0);
+        assert!(strip.reconcile_paths(&[], &original, 2));
+        assert_eq!(strip.range(), 0..2);
+
+        strip.scroll(2);
+        assert!(strip.reconcile_paths(&original, &paths(&["x", "y", "z"]), 2));
+        assert_eq!(strip.range(), 0..2);
+        assert!(strip.reconcile_paths(&paths(&["x", "y", "z"]), &[], 0));
+        assert_eq!(strip.range(), 0..0);
     }
 
     #[test]

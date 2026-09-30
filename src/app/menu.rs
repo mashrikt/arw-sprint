@@ -8,6 +8,7 @@ use std::cell::{Cell, RefCell};
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Command {
     Open,
+    RefreshFolder,
     OpenDeleted,
     Quit,
     Fit,
@@ -91,6 +92,12 @@ impl AppMenu {
             .map_err(|e| e.to_string())?;
         add(&application, "Quit ARW Sprint", Command::Quit, Action::Quit)?;
         add(&file, "Open Folder…", Command::Open, Action::Open)?;
+        add(
+            &file,
+            "Refresh Folder",
+            Command::RefreshFolder,
+            Action::RefreshFolder,
+        )?;
         add(
             &file,
             "Open _Rejected Folder",

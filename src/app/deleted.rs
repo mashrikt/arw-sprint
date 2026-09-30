@@ -394,6 +394,36 @@ pub fn move_photo(path: &Path) -> Result<MoveRecord, MoveError> {
     move_with(path, &mut crate::platform::rename_exclusive)
 }
 
+/// Recognize a complete external return without changing any file. A pathname
+/// alone is insufficient: a replacement RAW or an incomplete RAW/XMP return
+/// must not release the worker's write protection for the original location.
+pub(super) fn externally_restored(record: &MoveRecord) -> io::Result<()> {
+    unchanged_file(&record.source, record.identity)?;
+    directory(
+        record
+            .source
+            .parent()
+            .ok_or_else(|| invalid("source parent is missing"))?,
+    )?;
+    directory(
+        record
+            .destination
+            .parent()
+            .ok_or_else(|| invalid("destination parent is missing"))?,
+    )?;
+    vacant_pair(&record.destination)?;
+    let current_sidecar = matching_sidecar(&record.source)?;
+    if let Some(sidecar) = &record.sidecar {
+        unchanged_file(&sidecar.source, sidecar.identity)?;
+        if current_sidecar.map(|(_, identity)| identity) != Some(sidecar.identity) {
+            return Err(invalid(
+                "The original XMP sidecar has not returned with its RAW",
+            ));
+        }
+    }
+    Ok(())
+}
+
 fn move_with(
     path: &Path,
     rename: &mut impl FnMut(&Path, &Path) -> io::Result<()>,
@@ -409,6 +439,11 @@ fn move_with(
 /// after verifying the RAW, then apply the same identity checks and exclusive
 /// rollback to that snapshot. Original filenames are never overwritten.
 pub fn restore_photo(record: &MoveRecord) -> Result<(), MoveError> {
+    // An old undo entry can survive a complete Finder restore. Treat it as
+    // already completed only after the same strict identity/pair verification.
+    if externally_restored(record).is_ok() {
+        return Ok(());
+    }
     unchanged_file(&record.destination, record.identity)
         .map_err(|error| failure(record, true, error.to_string()))?;
     let current = matching_sidecar(&record.destination)
@@ -471,6 +506,60 @@ mod tests {
         fn drop(&mut self) {
             let _ = fs::remove_dir_all(&self.directory);
         }
+    }
+
+    #[test]
+    fn external_return_requires_the_complete_original_pair_and_is_read_only() {
+        let fixture = Fixture::new(true);
+        let record = move_photo(&fixture.raw).unwrap();
+        assert!(externally_restored(&record).is_err());
+        fs::rename(&record.destination, &record.source).unwrap();
+        assert!(externally_restored(&record).is_err());
+        let sidecar = record.sidecar.as_ref().unwrap();
+        fs::rename(&sidecar.destination, &sidecar.source).unwrap();
+        externally_restored(&record).unwrap();
+        restore_photo(&record).unwrap(); // A later undo is safely idempotent.
+        assert_eq!(regular_file(&record.source).unwrap(), record.identity);
+        assert_eq!(regular_file(&sidecar.source).unwrap(), sidecar.identity);
+        assert_eq!(fs::read(&record.source).unwrap(), RAW);
+        assert_eq!(fs::read(&sidecar.source).unwrap(), XMP);
+        assert!(!record.destination.exists());
+        assert!(!sidecar.destination.exists());
+    }
+
+    #[test]
+    fn external_return_rejects_replacement_raws_sidecars_and_symlinks() {
+        for replace_sidecar in [false, true] {
+            let fixture = Fixture::new(true);
+            let record = move_photo(&fixture.raw).unwrap();
+            let sidecar = record.sidecar.as_ref().unwrap();
+            fs::rename(&record.destination, &record.source).unwrap();
+            fs::rename(&sidecar.destination, &sidecar.source).unwrap();
+            let source = if replace_sidecar {
+                &sidecar.source
+            } else {
+                &record.source
+            };
+            let held = fixture.directory.join("held-original");
+            fs::rename(source, &held).unwrap();
+            fs::copy(&held, source).unwrap(); // Same bytes, a different inode.
+            assert!(externally_restored(&record).is_err());
+            fs::remove_file(source).unwrap();
+            symlink(&held, source).unwrap();
+            assert!(externally_restored(&record).is_err());
+        }
+    }
+
+    #[test]
+    fn raw_only_external_return_rejects_metadata_left_in_rejected() {
+        let fixture = Fixture::new(false);
+        let record = move_photo(&fixture.raw).unwrap();
+        fs::rename(&record.destination, &record.source).unwrap();
+        externally_restored(&record).unwrap();
+        let leftover = record.destination.with_extension("xmp");
+        fs::write(&leftover, XMP).unwrap();
+        assert!(externally_restored(&record).is_err());
+        assert_eq!(fs::read(leftover).unwrap(), XMP);
     }
 
     #[test]

@@ -70,6 +70,7 @@ actions! {
     ReplacePin, "replace_pin", "Replace comparison reference", ["Shift+C"], false;
     Escape, "escape", "Leave fullscreen / fit image", ["Escape"], false;
     Open, "open", "Open a folder", ["Cmd+O"], false;
+    RefreshFolder, "refresh_folder", "Refresh current folder", ["Cmd+R"], false;
     OpenRejected, "open_rejected", "Open _Rejected folder", [], false;
     Quit, "quit", "Save pending ratings and quit", ["Cmd+Q"], false;
     TrashCurrent, "trash_current", "Confirm Trash for current saved reject", ["Cmd+Backspace"], false;
@@ -326,6 +327,7 @@ impl Default for Bindings {
 
 impl Bindings {
     /// Missing actions retain defaults; an empty right-hand side unbinds an action.
+    /// A pre-refresh configuration may already use Cmd+R for another action.
     /// Validate the complete map before replacing the live configuration.
     pub(super) fn parse(config: &str) -> Result<Self, String> {
         if config.len() > MAX_CONFIG_BYTES {
@@ -380,6 +382,20 @@ impl Bindings {
                 }
             }
             result.bindings[action as usize] = chords;
+        }
+        // Refresh was added after customizable shortcuts. Preserve a user's
+        // existing Cmd+R assignment rather than rejecting their entire saved map.
+        // The editor emits every action, so explicit conflicts still fail below.
+        if !seen.contains(&Action::RefreshFolder) {
+            let refresh_defaults = result.bindings[Action::RefreshFolder as usize].clone();
+            result.bindings[Action::RefreshFolder as usize] = refresh_defaults
+                .into_iter()
+                .filter(|chord| {
+                    !seen
+                        .iter()
+                        .any(|action| result.bindings[*action as usize].contains(chord))
+                })
+                .collect();
         }
         let mut owners = std::collections::HashMap::new();
         for &action in Action::ALL {
@@ -541,6 +557,52 @@ mod tests {
             Some(Action::Rate5)
         );
         assert_eq!(Bindings::parse(&custom.serialize()).unwrap(), custom);
+    }
+
+    #[test]
+    fn refresh_is_non_repeating_and_can_be_disabled_or_remapped() {
+        // Existing saved configurations inherit the new default.
+        let bindings = Bindings::parse("zoom_in = V").unwrap();
+        assert_eq!(
+            bindings.resolve(&key("r"), ModifiersState::SUPER, false),
+            Some(Action::RefreshFolder)
+        );
+        assert_eq!(
+            bindings.resolve(&key("r"), ModifiersState::SUPER, true),
+            None
+        );
+        assert_eq!(
+            bindings.resolve(&key("r"), ModifiersState::empty(), false),
+            None
+        );
+
+        let remapped = Bindings::parse("refresh_folder = Ctrl+R\nhelp = Cmd+R").unwrap();
+        assert_eq!(
+            remapped.resolve(&key("r"), ModifiersState::CONTROL, false),
+            Some(Action::RefreshFolder)
+        );
+        assert_eq!(
+            remapped.resolve(&key("r"), ModifiersState::SUPER, false),
+            Some(Action::Help)
+        );
+        let disabled = Bindings::parse("refresh_folder =").unwrap();
+        assert_eq!(
+            disabled.resolve(&key("r"), ModifiersState::SUPER, false),
+            None
+        );
+        assert_eq!(Bindings::parse(&remapped.serialize()).unwrap(), remapped);
+    }
+
+    #[test]
+    fn older_custom_cmd_r_assignment_survives_refresh_default() {
+        let existing = Bindings::parse("help = Cmd+R").unwrap();
+        assert_eq!(
+            existing.resolve(&key("r"), ModifiersState::SUPER, false),
+            Some(Action::Help)
+        );
+        assert!(existing.keys(Action::RefreshFolder).is_empty());
+        assert_eq!(Bindings::parse(&existing.serialize()).unwrap(), existing);
+        assert!(Bindings::parse("help = Cmd+R\nrefresh_folder = Cmd+R").is_err());
     }
 
     #[test]

@@ -5,6 +5,8 @@ mod filmstrip;
 mod gestures;
 mod io;
 mod menu;
+mod mutation_test;
+mod refresh;
 mod scan;
 mod session;
 mod shortcut_store;
@@ -55,6 +57,7 @@ pub struct Options {
     pub path: Option<PathBuf>,
     pub cache_mb: usize,
     pub smoke_test: Option<PathBuf>,
+    pub mutation_test: Option<PathBuf>,
 }
 enum Event {
     Open(PathBuf),
@@ -107,6 +110,7 @@ struct App {
     thumb_cache: VecDeque<(PathBuf, Arc<PreparedTexture>)>,
     thumb_unavailable: HashSet<PathBuf>,
     thumb_serial: u64,
+    thumb_valid_from: u64,
     thumb_range: std::ops::Range<usize>,
     thumb_plan_sent: bool,
     thumb_deadline: Option<Instant>,
@@ -149,12 +153,14 @@ struct App {
     folder: Option<PathBuf>,
     scanning: bool,
     scan_complete_only: bool,
+    refreshing: bool,
     user_navigated: bool,
     navigator: Navigator,
     info: HashMap<PathBuf, PhotoInfo>,
     textures: VecDeque<(PathBuf, Arc<PreparedTexture>)>,
     gpu_prefetched: HashSet<PathBuf>,
     displayed: Option<PathBuf>,
+    failed_preview: Option<PathBuf>,
     pending_upload: Option<u64>,
     pending_gpu_prefetch: Option<(u64, PathBuf)>,
     attempted_gpu_prefetch: Option<PathBuf>,
@@ -175,10 +181,25 @@ struct App {
     cpu_hits: u64,
     prefetch_hits: u64,
     smoke: Option<Smoke>,
+    mutation_test: Option<mutation_test::MutationTest>,
     fatal: Option<String>,
 }
 
-pub fn run(options: Options) -> Result<(), String> {
+pub fn run(mut options: Options) -> Result<(), String> {
+    if options.mutation_test.is_some() && (options.path.is_some() || options.smoke_test.is_some()) {
+        return Err(
+            "--mutation-test creates its own fixtures; do not supply photos or --smoke-test".into(),
+        );
+    }
+    let mutation_test = options
+        .mutation_test
+        .take()
+        .map(mutation_test::MutationTest::new)
+        .transpose()?;
+    if let Some(test) = &mutation_test {
+        options.path = Some(test.folder.clone());
+    }
+    let diagnostic = options.smoke_test.is_some() || mutation_test.is_some();
     let event_loop = EventLoop::<Event>::with_user_event()
         .with_default_menu(false)
         .build()
@@ -219,8 +240,8 @@ pub fn run(options: Options) -> Result<(), String> {
     let io = IoWorker::new(Arc::new(move |event| {
         let _ = io_proxy.send_event(Event::Io(event));
     }))?;
-    let restore_allowed = options.path.is_none() && options.smoke_test.is_none();
-    let session_store = if options.smoke_test.is_none() {
+    let restore_allowed = options.path.is_none() && !diagnostic;
+    let session_store = if !diagnostic {
         let session_proxy = proxy.clone();
         match SessionWorker::new(Arc::new(move |event| {
             let _ = session_proxy.send_event(Event::Session(event));
@@ -234,7 +255,7 @@ pub fn run(options: Options) -> Result<(), String> {
     } else {
         None
     };
-    let shortcut_store = if options.smoke_test.is_none() {
+    let shortcut_store = if !diagnostic {
         let shortcut_proxy = proxy.clone();
         match ShortcutStore::new(Arc::new(move |event| {
             let _ = shortcut_proxy.send_event(Event::Shortcuts(event));
@@ -268,6 +289,7 @@ pub fn run(options: Options) -> Result<(), String> {
         thumb_cache: VecDeque::new(),
         thumb_unavailable: HashSet::new(),
         thumb_serial: 0,
+        thumb_valid_from: 0,
         thumb_range: 0..0,
         thumb_plan_sent: false,
         thumb_deadline: None,
@@ -310,12 +332,14 @@ pub fn run(options: Options) -> Result<(), String> {
         folder: None,
         scanning: false,
         scan_complete_only: false,
+        refreshing: false,
         user_navigated: false,
         navigator: Navigator::new(0),
         info: HashMap::new(),
         textures: VecDeque::new(),
         gpu_prefetched: HashSet::new(),
         displayed: None,
+        failed_preview: None,
         pending_upload: None,
         pending_gpu_prefetch: None,
         attempted_gpu_prefetch: None,
@@ -352,6 +376,7 @@ pub fn run(options: Options) -> Result<(), String> {
             strip_expected_range: None,
             zoom_transition: None,
         }),
+        mutation_test,
         fatal: None,
     };
     event_loop.set_control_flow(ControlFlow::Wait);
@@ -527,6 +552,15 @@ impl App {
         self.redraw();
     }
     fn open(&mut self, path: PathBuf) {
+        // This diagnostic may move files only inside its exclusively created
+        // synthetic folder. Ignore Finder/drop/open requests during the test.
+        if self
+            .mutation_test
+            .as_ref()
+            .is_some_and(|test| path != test.folder)
+        {
+            return;
+        }
         if self.quitting || self.trash_busy {
             return;
         }
@@ -563,6 +597,7 @@ impl App {
         self.textures.clear();
         self.gpu_prefetched.clear();
         self.displayed = None;
+        self.failed_preview = None;
         self.pending_upload = None;
         self.pending_gpu_prefetch = None;
         self.attempted_gpu_prefetch = None;
@@ -570,6 +605,7 @@ impl App {
         self.user_navigated = false;
         self.scanning = true;
         self.scan_complete_only = false;
+        self.refreshing = false;
         self.notice.clear();
         if let Some(renderer) = &mut self.renderer {
             renderer.set_image(None);
@@ -591,6 +627,13 @@ impl App {
             Ok(result) if result.session == self.folder_epoch.load(Ordering::Acquire) => result,
             Err((epoch, error)) if epoch == self.folder_epoch.load(Ordering::Acquire) => {
                 self.scanning = false;
+                if self.refreshing {
+                    self.refreshing = false;
+                    self.scan_complete_only = false;
+                    self.start_rating_index();
+                    self.message(format!("Refresh failed: {error}"));
+                    return;
+                }
                 eprintln!("open folder: {error}");
                 if let Some(renderer) = &mut self.renderer {
                     renderer.set_message("Folder unavailable - choose File > Open Folder");
@@ -601,6 +644,10 @@ impl App {
             _ => return,
         };
         if self.scan_complete_only && !result.complete {
+            return;
+        }
+        if self.refreshing {
+            self.apply_folder_refresh(result);
             return;
         }
         if result.complete {
@@ -627,14 +674,34 @@ impl App {
         }
         self.start_rating_index();
         self.refresh_visible(preferred.as_deref());
+        if result.requested.is_some() && !self.user_navigated {
+            self.reveal_current_thumbnail();
+            self.status();
+            self.arm_thumbnails();
+        }
     }
     fn start_rating_index(&mut self) {
         if self.filter != PhotoFilter::All && !self.scanning && !self.rating_index_started {
+            // Existing ratings survive an incremental list change. Only new or
+            // previously unread entries need sidecar I/O.
+            let unread: Vec<_> = self
+                .all_files
+                .iter()
+                .filter(|path| {
+                    self.info
+                        .get(*path)
+                        .is_none_or(|info| info.rating.is_none())
+                })
+                .cloned()
+                .collect();
             self.rating_index_started = true;
-            self.io.scan_ratings(
-                self.folder_epoch.load(Ordering::Acquire),
-                Arc::clone(&self.all_files),
-            );
+            self.ratings_read = self.all_files.len() - unread.len();
+            self.rating_index_complete = unread.is_empty();
+            if unread.is_empty() {
+                return;
+            }
+            self.io
+                .scan_ratings(self.folder_epoch.load(Ordering::Acquire), Arc::new(unread));
         }
     }
     fn set_filter(&mut self, filter: PhotoFilter) {
@@ -663,6 +730,7 @@ impl App {
             && preferred == self.current().as_deref()
         {
             self.status();
+            self.arm_thumbnails();
             return;
         }
         let visible = if self.filter == PhotoFilter::All {
@@ -674,7 +742,7 @@ impl App {
         };
         let selected = choose_selection(&visible, preferred, self.navigator.index());
         if *visible != *self.files {
-            self.stop_thumbnail_work();
+            self.invalidate_thumbnail_work();
             self.generation.fetch_add(1, Ordering::AcqRel);
             self.session += 1;
             if let Some(uploader) = &self.uploader {
@@ -684,6 +752,13 @@ impl App {
             self.pending_gpu_prefetch = None;
             self.attempted_gpu_prefetch = None;
             self.first_render = false;
+            let capacity = self
+                .renderer
+                .as_ref()
+                .map_or(1, Renderer::filmstrip_capacity)
+                .clamp(1, 24);
+            self.strip_window
+                .reconcile_paths(&self.files, &visible, capacity);
             self.files = visible;
             self.navigator = Navigator::new(self.files.len());
             self.navigator.seek(selected.unwrap_or(0));
@@ -691,6 +766,7 @@ impl App {
             let paths: HashSet<_> = self.files.iter().collect();
             self.textures.retain(|(path, _)| paths.contains(path));
             self.thumb_cache.retain(|(path, _)| paths.contains(path));
+            self.thumb_unavailable.retain(|path| paths.contains(path));
             self.gpu_prefetched.retain(|path| paths.contains(path));
             if self
                 .displayed
@@ -703,9 +779,34 @@ impl App {
                 }
             }
             self.sync_gpu_cache();
-            self.request_current();
+            if self.current().is_some() && self.current() == self.displayed {
+                // Rekey scheduling to the new indices without redisplaying the
+                // surviving main texture or disturbing zoom/peek/strip position.
+                if let Some(index) = self.navigator.index() {
+                    let path = &self.files[index];
+                    if let Some(uploader) = &self.uploader {
+                        uploader.retarget(
+                            self.session,
+                            path,
+                            self.generation.load(Ordering::Acquire),
+                        );
+                    }
+                    if !self.info.get(path).is_some_and(|info| info.read) {
+                        self.io.read(self.session, path.clone());
+                    }
+                    self.loader.request_cached(
+                        index,
+                        self.generation.load(Ordering::Acquire),
+                        self.navigator.direction(),
+                    );
+                    self.loader.resume_prefetch();
+                    self.prefetch_gpu();
+                }
+            } else {
+                self.request_current_preserving_strip();
+            }
         } else if selected.is_some_and(|index| self.navigator.seek(index)) {
-            self.request_current();
+            self.request_current_preserving_strip();
         }
         if self.files.is_empty() {
             let message = if self.scanning {
@@ -723,6 +824,7 @@ impl App {
             }
         }
         self.status();
+        self.arm_thumbnails();
     }
     fn ratings_changed(&mut self) {
         let previous = self.current();
@@ -743,9 +845,13 @@ impl App {
         }
     }
     fn request_current(&mut self) {
+        self.reveal_current_thumbnail();
+        self.request_current_preserving_strip();
+    }
+    fn request_current_preserving_strip(&mut self) {
         self.stop_thumbnail_work();
         self.thumb_retries = 0;
-        self.reveal_current_thumbnail();
+        self.failed_preview = None;
         let Some(index) = self.navigator.index() else {
             return;
         };
@@ -811,6 +917,7 @@ impl App {
         }
     }
     fn show(&mut self, path: PathBuf, texture: Arc<PreparedTexture>) {
+        self.failed_preview = None;
         let orientation = self
             .info
             .get(&path)
@@ -1003,6 +1110,7 @@ impl App {
                 && generation == self.generation.load(Ordering::Acquire) =>
             {
                 eprintln!("{}: {error}", self.files[index].display());
+                self.failed_preview = Some(self.files[index].clone());
                 self.displayed = None;
                 if let Some(renderer) = &mut self.renderer {
                     renderer.set_image(None);
@@ -1080,6 +1188,7 @@ impl App {
             }
             Err(error) => {
                 eprintln!("GPU upload: {error}");
+                self.failed_preview = Some(event.path);
                 if let Some(renderer) = &mut self.renderer {
                     renderer.set_image(None);
                     renderer.set_message("Preview unavailable - use arrows to continue");
@@ -1551,6 +1660,7 @@ impl App {
             return;
         }
         match command {
+            Command::RefreshFolder => self.refresh_folder(),
             Command::Open if !self.trash_busy => {
                 self.restore_allowed = false;
                 let mut picker = rfd::FileDialog::new().set_title("Open folder containing Sony ARWs");
@@ -1686,6 +1796,7 @@ impl App {
                 }
             }
             Action::Open => self.command(Command::Open),
+            Action::RefreshFolder => self.command(Command::RefreshFolder),
             Action::OpenRejected => self.command(Command::OpenDeleted),
             Action::Quit => self.quit(),
             Action::TrashCurrent => self.command(Command::TrashCurrent),
@@ -2806,6 +2917,7 @@ impl ApplicationHandler<Event> for App {
     }
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
         self.smoke_tick(event_loop);
+        mutation_test::tick(self, event_loop);
         if self
             .thumb_deadline
             .is_some_and(|deadline| deadline <= Instant::now())
@@ -2813,7 +2925,7 @@ impl ApplicationHandler<Event> for App {
             self.thumb_deadline = None;
             self.start_thumbnails(true);
         }
-        let deadline = if self.smoke.is_some() {
+        let deadline = if self.smoke.is_some() || self.mutation_test.is_some() {
             Some(
                 self.thumb_deadline
                     .map_or(Instant::now() + Duration::from_millis(50), |deadline| {

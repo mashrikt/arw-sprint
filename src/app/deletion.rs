@@ -14,11 +14,12 @@ pub(super) enum UndoAction {
 pub(super) struct PendingMove {
     id: u64,
     resume_scan: bool,
+    resume_refresh: bool,
 }
 
 /// Keep the selected survivor, otherwise select the next visible survivor,
 /// falling back to the previous one at the end of the filtered list.
-fn next_survivor(
+pub(super) fn next_survivor(
     files: &[PathBuf],
     index: Option<usize>,
     removed: &HashSet<PathBuf>,
@@ -63,15 +64,18 @@ impl App {
     pub(super) fn begin_file_mutation(&mut self, id: u64) {
         self.interaction_serial += 1;
         self.user_navigated = true;
+        self.invalidate_thumbnail_work();
         // A queued directory snapshot must not resurrect a moved filename.
         // Resume an interrupted startup scan only after the mutation completes.
         self.pending_deleted = Some(PendingMove {
             id,
             resume_scan: self.scanning,
+            resume_refresh: self.refreshing,
         });
         self.folder_epoch.fetch_add(1, Ordering::AcqRel);
         self.scanning = false;
         self.scan_complete_only = false;
+        self.refreshing = false;
         self.io.cancel_rating_scan();
         // Removing a known photo cannot invalidate ratings of the survivors.
         // Keep a completed index instead of rereading thousands of sidecars on
@@ -98,6 +102,7 @@ impl App {
             if let Some(folder) = self.folder.clone() {
                 self.scanning = true;
                 self.scan_complete_only = true;
+                self.refreshing = pending.resume_refresh;
                 let epoch = self.folder_epoch.fetch_add(1, Ordering::AcqRel) + 1;
                 let proxy = self.proxy.clone();
                 scan::start(
@@ -202,6 +207,8 @@ impl App {
             return;
         }
         let removed: HashSet<_> = records.iter().map(|record| record.source.clone()).collect();
+        self.thumb_unavailable
+            .retain(|path| !removed.contains(path));
         let preferred = next_survivor(&self.files, self.navigator.index(), &removed);
         if self
             .pinned
@@ -278,11 +285,17 @@ impl App {
             .iter()
             .map(|record| record.destination.clone())
             .collect();
-        let preferred = restored
-            .iter()
-            .find(|record| record.source.parent() == self.folder.as_deref())
-            .map(|record| record.source.clone())
-            .or_else(|| next_survivor(&self.files, self.navigator.index(), &removed));
+        let preferred =
+            next_survivor(&self.files, self.navigator.index(), &removed).or_else(|| {
+                restored
+                    .iter()
+                    .find(|record| record.source.parent() == self.folder.as_deref())
+                    .map(|record| record.source.clone())
+            });
+        for record in &restored {
+            self.thumb_unavailable.remove(&record.source);
+            self.thumb_unavailable.remove(&record.destination);
+        }
         if self
             .pinned
             .as_ref()
