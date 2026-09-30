@@ -35,8 +35,10 @@ Press **Space or X** to move the current photo and its XMP sidecar into a local
 
 Press **Tab** to show the bottom filmstrip. Scroll over it to browse thumbnails
 without changing the main photo, then click a thumbnail to open it.
-Scroll over the main photo to zoom and drag to pan. Zoom and position carry over
-to the next photo by default; **L** turns that behavior off or on.
+Over the main photo, move two fingers on the trackpad to pan, or pinch to zoom.
+Hold **Shift** while scrolling to zoom instead. Clicking and dragging up zooms in;
+dragging down zooms out. Zoom and position carry over to the next photo by
+default; **L** turns that behavior off or on.
 
 Photos too dark to judge? Press **]** to brighten or **[** to darken the view,
 in one-third-stop steps up to ±3 stops. **Backslash (\\)** resets it.
@@ -44,7 +46,19 @@ Brightness applies to every photo, comparison and thumbnail, and stays set after
 restarting. It only changes the view, never your RAWs or XMP sidecars. It cannot
 recover details that are missing from the embedded JPEG.
 
-## All shortcuts
+## Customize shortcuts
+
+Open **ARW Sprint → Customize Shortcuts…** with **Cmd+,**, or find it in **Help**.
+Double-click a shortcut cell to edit it. Separate alternatives with commas, such
+as `S, +, =`, or leave the cell blank to remove a shortcut. **Save** applies your
+changes immediately and remembers them for next time. Conflicting shortcuts are
+rejected; **Restore Defaults** brings back the original bindings.
+
+You can also assign shortcuts to menu actions that have none by default.
+The standard macOS shortcuts **Cmd+H**, **Cmd+Option+H**, and **Cmd+M** stay reserved.
+**Help → Keyboard Shortcuts** shows your current bindings.
+
+## Default shortcuts
 
 ### Browse and cull
 
@@ -78,9 +92,11 @@ XMP sidecars in place and cannot be undone with Cmd+Z.
 | Z | Switch between fit and 100% |
 | L | Keep zoom and position across photos on / off |
 | Hold P | Peek at 100% under the pointer; release to return |
-| Mouse wheel / trackpad scroll over the photo | Zoom around the pointer |
+| Two-finger trackpad scroll over the photo | Pan while zoomed |
+| Shift + two-finger trackpad scroll | Zoom around the pointer |
+| Ordinary mouse wheel over the photo | Zoom around the pointer |
 | Trackpad pinch | Zoom around the pointer |
-| Click and drag the photo | Pan while zoomed |
+| Click and drag the photo up / down | Zoom in / out around where you clicked |
 | ] / [ | Brighten / darken all previews by one-third stop |
 | Backslash (\\) | Reset viewing brightness |
 | C | Pin the current photo for comparison / close comparison |
@@ -88,6 +104,7 @@ XMP sidecars in place and cannot be undone with Cmd+Z.
 | F | Toggle fullscreen |
 | Esc | Leave fullscreen; otherwise fit the photo to the window |
 | Cmd+O | Open a folder |
+| Cmd+, | Customize keyboard shortcuts |
 | Cmd+Q | Save pending ratings and quit |
 | Cmd+M | Minimize the window |
 | Cmd+H | Hide ARW Sprint |
@@ -102,7 +119,7 @@ More menu actions:
 - **Filter → Rated photos / Unrated photos / Not rejected** offers more filters.
 - **File → Move Rejected Photos to _Rejected… / Move Rejected Photos to Trash…**
   confirms a batch move of photos with saved rejection metadata.
-- **Help → Keyboard Shortcuts** opens the in-app reference.
+- **Help → Keyboard Shortcuts** opens the reference with your current bindings.
 
 ## Build from source
 

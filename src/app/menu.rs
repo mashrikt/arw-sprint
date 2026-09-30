@@ -1,9 +1,9 @@
+use super::shortcuts::{Action, Bindings};
 use crate::browser::filter::PhotoFilter;
 use muda::{
-    accelerator::{Accelerator, Code, Modifiers},
     AboutMetadata, CheckMenuItem, Menu, MenuEvent, MenuId, MenuItem, PredefinedMenuItem, Submenu,
 };
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Command {
@@ -29,6 +29,7 @@ pub enum Command {
     TrashCurrent,
     TrashRejected,
     Help,
+    CustomizeShortcuts,
 }
 
 pub struct AppMenu {
@@ -41,10 +42,13 @@ pub struct AppMenu {
     undo: MenuItem,
     filmstrip: CheckMenuItem,
     last_workflow: Cell<Option<[bool; 5]>>,
+    shortcut_items: Vec<(MenuItem, Action, &'static str)>,
+    shortcut_checks: Vec<(CheckMenuItem, Action, &'static str)>,
+    pin_shortcuts: RefCell<String>,
 }
 
 impl AppMenu {
-    pub fn new() -> Result<Self, String> {
+    pub fn new(bindings: &Bindings) -> Result<Self, String> {
         let menu = Menu::new();
         let application = Submenu::new("ARW Sprint", true);
         let file = Submenu::new("File", true);
@@ -64,37 +68,48 @@ impl AppMenu {
             &PredefinedMenuItem::show_all(None), &PredefinedMenuItem::separator(),
         ]).map_err(|e| e.to_string())?;
         let mut items = Vec::new();
+        let mut shortcut_items = Vec::new();
+        let mut shortcut_checks = Vec::new();
+        // App shortcuts are routed once through the configurable winit map.
+        // Fixed Cocoa accelerators would intercept removed/remapped bindings.
         let mut add =
-            |parent: &Submenu, text: &str, command, key: Option<Code>| -> Result<(), String> {
-                let item = MenuItem::new(
-                    text,
-                    true,
-                    key.map(|key| Accelerator::new(Some(Modifiers::SUPER), key)),
-                );
+            |parent: &Submenu, text: &'static str, command, action| -> Result<(), String> {
+                let item = MenuItem::new(shortcut_label(text, &bindings.keys(action)), true, None);
                 items.push((item.id().clone(), command));
-                parent.append(&item).map_err(|e| e.to_string())
+                parent.append(&item).map_err(|e| e.to_string())?;
+                shortcut_items.push((item, action, text));
+                Ok(())
             };
         add(
             &application,
-            "Quit ARW Sprint",
-            Command::Quit,
-            Some(Code::KeyQ),
+            "Customize Shortcuts…",
+            Command::CustomizeShortcuts,
+            Action::CustomizeShortcuts,
         )?;
-        add(&file, "Open Folder…", Command::Open, Some(Code::KeyO))?;
-        add(&file, "Open _Rejected Folder", Command::OpenDeleted, None)?;
+        application
+            .append(&PredefinedMenuItem::separator())
+            .map_err(|e| e.to_string())?;
+        add(&application, "Quit ARW Sprint", Command::Quit, Action::Quit)?;
+        add(&file, "Open Folder…", Command::Open, Action::Open)?;
+        add(
+            &file,
+            "Open _Rejected Folder",
+            Command::OpenDeleted,
+            Action::OpenRejected,
+        )?;
         file.append(&PredefinedMenuItem::separator())
             .map_err(|e| e.to_string())?;
         add(
             &file,
-            "Move Current Photo to _Rejected (Space / X)",
+            "Move Current Photo to _Rejected",
             Command::MoveDeletedCurrent,
-            None,
+            Action::MoveRejected,
         )?;
         add(
             &file,
             "Move Rejected Photos to _Rejected…",
             Command::MoveDeletedRejected,
-            None,
+            Action::MoveRejectedBatch,
         )?;
         file.append(&PredefinedMenuItem::separator())
             .map_err(|e| e.to_string())?;
@@ -102,84 +117,144 @@ impl AppMenu {
             &file,
             "Move Current Rejected Photo to Trash…",
             Command::TrashCurrent,
-            Some(Code::Backspace),
+            Action::TrashCurrent,
         )?;
         add(
             &file,
             "Move Rejected Photos to Trash…",
             Command::TrashRejected,
-            None,
+            Action::TrashRejected,
         )?;
-        add(&view, "Fit", Command::Fit, None)?;
-        add(&view, "Fill", Command::Fill, None)?;
-        add(&view, "Actual Size (100%)", Command::Actual, None)?;
-        add(&view, "Toggle Fullscreen", Command::Fullscreen, None)?;
+        add(&view, "Fit", Command::Fit, Action::Fit)?;
+        add(&view, "Fill", Command::Fill, Action::Fill)?;
+        add(&view, "Actual Size (100%)", Command::Actual, Action::Actual)?;
+        add(
+            &view,
+            "Toggle Fullscreen",
+            Command::Fullscreen,
+            Action::Fullscreen,
+        )?;
         view.append(&PredefinedMenuItem::separator())
             .map_err(|e| e.to_string())?;
         add(
             &view,
-            "Increase Viewing Brightness (])",
+            "Increase Viewing Brightness",
             Command::Brighten,
-            None,
+            Action::Brighten,
         )?;
         add(
             &view,
-            "Decrease Viewing Brightness ([)",
+            "Decrease Viewing Brightness",
             Command::Darken,
-            None,
+            Action::Darken,
         )?;
         add(
             &view,
-            "Reset Viewing Brightness (\\)",
+            "Reset Viewing Brightness",
             Command::ResetBrightness,
-            None,
+            Action::ResetBrightness,
         )?;
-        add(&help, "Keyboard Shortcuts", Command::Help, None)?;
+        add(&help, "Keyboard Shortcuts", Command::Help, Action::Help)?;
+        add(
+            &help,
+            "Customize Shortcuts…",
+            Command::CustomizeShortcuts,
+            Action::CustomizeShortcuts,
+        )?;
         let undo = MenuItem::new(
-            "Undo Rating / Move",
+            shortcut_label("Undo Rating / Move", &bindings.keys(Action::Undo)),
             false,
-            Some(Accelerator::new(Some(Modifiers::SUPER), Code::KeyZ)),
+            None,
         );
         items.push((undo.id().clone(), Command::UndoRating));
         edit.append(&undo).map_err(|e| e.to_string())?;
-        let auto_advance = CheckMenuItem::new("Auto-Advance After Rating (A)", true, false, None);
+        shortcut_items.push((undo.clone(), Action::Undo, "Undo Rating / Move"));
+        let auto_advance = CheckMenuItem::new(
+            shortcut_label(
+                "Auto-Advance After Rating",
+                &bindings.keys(Action::AutoAdvance),
+            ),
+            true,
+            false,
+            None,
+        );
         items.push((auto_advance.id().clone(), Command::AutoAdvance));
         edit.append(&auto_advance).map_err(|e| e.to_string())?;
-        let zoom_lock = CheckMenuItem::new("Keep Zoom and Position (L)", true, false, None);
+        shortcut_checks.push((
+            auto_advance.clone(),
+            Action::AutoAdvance,
+            "Auto-Advance After Rating",
+        ));
+        let zoom_lock = CheckMenuItem::new(
+            shortcut_label("Keep Zoom and Position", &bindings.keys(Action::ZoomLock)),
+            true,
+            false,
+            None,
+        );
         items.push((zoom_lock.id().clone(), Command::ZoomLock));
         view.append_items(&[&PredefinedMenuItem::separator(), &zoom_lock])
             .map_err(|e| e.to_string())?;
-        let pin = MenuItem::new("Pin Current Photo for Comparison (C)", false, None);
+        shortcut_checks.push((
+            zoom_lock.clone(),
+            Action::ZoomLock,
+            "Keep Zoom and Position",
+        ));
+        let pin = MenuItem::new(
+            shortcut_label(
+                "Pin Current Photo for Comparison",
+                &bindings.keys(Action::Pin),
+            ),
+            false,
+            None,
+        );
         items.push((pin.id().clone(), Command::Pin));
         view.append(&pin).map_err(|e| e.to_string())?;
-        let replace_pin =
-            MenuItem::new("Replace Reference with Current Photo (Shift+C)", true, None);
+        let replace_pin = MenuItem::new(
+            shortcut_label(
+                "Replace Reference with Current Photo",
+                &bindings.keys(Action::ReplacePin),
+            ),
+            true,
+            None,
+        );
         items.push((replace_pin.id().clone(), Command::ReplacePin));
         view.append(&replace_pin).map_err(|e| e.to_string())?;
-        let filmstrip = CheckMenuItem::new("Show Filmstrip (Tab)", true, false, None);
+        shortcut_items.push((
+            replace_pin,
+            Action::ReplacePin,
+            "Replace Reference with Current Photo",
+        ));
+        let filmstrip = CheckMenuItem::new(
+            shortcut_label("Show Filmstrip", &bindings.keys(Action::Filmstrip)),
+            true,
+            false,
+            None,
+        );
         items.push((filmstrip.id().clone(), Command::Filmstrip));
         view.append(&filmstrip).map_err(|e| e.to_string())?;
+        shortcut_checks.push((filmstrip.clone(), Action::Filmstrip, "Show Filmstrip"));
         let mut filters = Vec::new();
-        for (filter, key) in [
-            (PhotoFilter::All, Some(Code::Digit0)),
-            (PhotoFilter::Stars(1), Some(Code::Digit1)),
-            (PhotoFilter::Stars(2), Some(Code::Digit2)),
-            (PhotoFilter::Stars(3), Some(Code::Digit3)),
-            (PhotoFilter::Stars(4), Some(Code::Digit4)),
-            (PhotoFilter::Stars(5), Some(Code::Digit5)),
-            (PhotoFilter::Rated, None),
-            (PhotoFilter::Unrated, None),
-            (PhotoFilter::Rejected, Some(Code::KeyX)),
-            (PhotoFilter::NotRejected, None),
+        for (filter, action) in [
+            (PhotoFilter::All, Action::FilterAll),
+            (PhotoFilter::Stars(1), Action::Filter1),
+            (PhotoFilter::Stars(2), Action::Filter2),
+            (PhotoFilter::Stars(3), Action::Filter3),
+            (PhotoFilter::Stars(4), Action::Filter4),
+            (PhotoFilter::Stars(5), Action::Filter5),
+            (PhotoFilter::Rated, Action::FilterRated),
+            (PhotoFilter::Unrated, Action::FilterUnrated),
+            (PhotoFilter::Rejected, Action::FilterRejected),
+            (PhotoFilter::NotRejected, Action::FilterNotRejected),
         ] {
             let item = CheckMenuItem::new(
-                filter.label(),
+                shortcut_label(filter.label(), &bindings.keys(action)),
                 true,
                 filter == PhotoFilter::All,
-                key.map(|key| Accelerator::new(Some(Modifiers::SUPER | Modifiers::ALT), key)),
+                None,
             );
             items.push((item.id().clone(), Command::Filter(filter)));
             filter_menu.append(&item).map_err(|e| e.to_string())?;
+            shortcut_checks.push((item.clone(), action, filter.label()));
             filters.push((filter, item));
         }
         window
@@ -210,7 +285,32 @@ impl AppMenu {
             undo,
             filmstrip,
             last_workflow: Cell::new(None),
+            shortcut_items,
+            shortcut_checks,
+            pin_shortcuts: RefCell::new(bindings.keys(Action::Pin)),
         })
+    }
+
+    pub fn set_shortcuts(&self, bindings: &Bindings) {
+        for (item, action, label) in &self.shortcut_items {
+            item.set_text(shortcut_label(label, &bindings.keys(*action)));
+        }
+        for (item, action, label) in &self.shortcut_checks {
+            item.set_text(shortcut_label(label, &bindings.keys(*action)));
+        }
+        *self.pin_shortcuts.borrow_mut() = bindings.keys(Action::Pin);
+        self.update_pin_label(self.last_workflow.get().is_some_and(|state| state[2]));
+    }
+
+    fn update_pin_label(&self, pinned: bool) {
+        self.pin.set_text(shortcut_label(
+            if pinned {
+                "Close Comparison"
+            } else {
+                "Pin Current Photo for Comparison"
+            },
+            &self.pin_shortcuts.borrow(),
+        ));
     }
 
     pub fn set_filter(&self, selected: PhotoFilter) {
@@ -245,11 +345,15 @@ impl AppMenu {
         self.zoom_lock.set_checked(zoom_locked);
         self.auto_advance.set_checked(auto_advance);
         self.pin.set_enabled(pinned || can_pin);
-        self.pin.set_text(if pinned {
-            "Close Comparison (C)"
-        } else {
-            "Pin Current Photo for Comparison (C)"
-        });
+        self.update_pin_label(pinned);
         self.undo.set_enabled(can_undo);
+    }
+}
+
+fn shortcut_label(label: &str, keys: &str) -> String {
+    if keys.is_empty() {
+        label.to_owned()
+    } else {
+        format!("{label} ({keys})")
     }
 }

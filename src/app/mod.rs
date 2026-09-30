@@ -2,11 +2,14 @@
 mod deleted;
 mod deletion;
 mod filmstrip;
+mod gestures;
 mod io;
 mod menu;
 mod scan;
 mod session;
+mod shortcut_store;
 mod shortcuts;
+mod smoke_controls;
 mod thumbnails;
 mod upload;
 
@@ -25,6 +28,8 @@ use crate::{
 use io::{IoEvent, IoWorker};
 use menu::{AppMenu, Command};
 use session::{SessionEvent, SessionWorker};
+use shortcut_store::{ShortcutStore, StoreEvent};
+use shortcuts::{Action, Bindings};
 use std::{
     collections::{HashMap, HashSet, VecDeque},
     path::PathBuf,
@@ -40,8 +45,9 @@ use winit::{
     dpi::LogicalSize,
     event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent},
     event_loop::{ActiveEventLoop, ControlFlow, EventLoop, EventLoopProxy},
-    keyboard::{Key, KeyCode, ModifiersState, NamedKey, PhysicalKey},
+    keyboard::{Key, ModifiersState, NamedKey},
     platform::macos::EventLoopBuilderExtMacOS,
+    platform::modifier_supplement::KeyEventExtModifierSupplement,
     window::{Fullscreen, Window, WindowId},
 };
 
@@ -58,6 +64,7 @@ enum Event {
     Io(IoEvent),
     Menu(muda::MenuEvent),
     Session(SessionEvent),
+    Shortcuts(StoreEvent),
     Thumbnail(ThumbnailEvent),
     ThumbUploaded(upload::ThumbFinished),
 }
@@ -110,6 +117,10 @@ struct App {
     loader: Arc<ImageLoader>,
     io: IoWorker,
     session_store: Option<SessionWorker>,
+    shortcut_store: Option<ShortcutStore>,
+    shortcuts: Bindings,
+    shortcuts_changed: bool,
+    held_peek: Option<Key>,
     restore_allowed: bool,
     zoom_preference_changed: bool,
     auto_preference_changed: bool,
@@ -151,7 +162,7 @@ struct App {
     first_render: bool,
     modifiers: ModifiersState,
     cursor: [f64; 2],
-    dragging: bool,
+    drag_anchor: Option<[f64; 2]>,
     initial_path: Option<PathBuf>,
     quitting: bool,
     trash_busy: bool,
@@ -223,6 +234,20 @@ pub fn run(options: Options) -> Result<(), String> {
     } else {
         None
     };
+    let shortcut_store = if options.smoke_test.is_none() {
+        let shortcut_proxy = proxy.clone();
+        match ShortcutStore::new(Arc::new(move |event| {
+            let _ = shortcut_proxy.send_event(Event::Shortcuts(event));
+        })) {
+            Ok(worker) => Some(worker),
+            Err(error) => {
+                eprintln!("Shortcut persistence unavailable: {error}");
+                None
+            }
+        }
+    } else {
+        None
+    };
     let thumb_proxy = proxy.clone();
     let thumbnails = ThumbnailWorker::new(
         Arc::clone(&thumbnail_budget),
@@ -253,6 +278,10 @@ pub fn run(options: Options) -> Result<(), String> {
         loader,
         io,
         session_store,
+        shortcut_store,
+        shortcuts: Bindings::default(),
+        shortcuts_changed: false,
+        held_peek: None,
         restore_allowed,
         zoom_preference_changed: false,
         auto_preference_changed: false,
@@ -294,7 +323,7 @@ pub fn run(options: Options) -> Result<(), String> {
         first_render: false,
         modifiers: ModifiersState::empty(),
         cursor: [0.0; 2],
-        dragging: false,
+        drag_anchor: None,
         initial_path: options.path,
         quitting: false,
         trash_busy: false,
@@ -423,7 +452,7 @@ impl App {
             }
             text
         } else {
-            "ARW Sprint    Cmd+O: open folder".into()
+            "ARW Sprint    File > Open Folder".into()
         };
         if self.scanning {
             text.push_str("    Scanning...");
@@ -564,7 +593,7 @@ impl App {
                 self.scanning = false;
                 eprintln!("open folder: {error}");
                 if let Some(renderer) = &mut self.renderer {
-                    renderer.set_message("Folder unavailable - Cmd+O to choose a folder");
+                    renderer.set_message("Folder unavailable - choose File > Open Folder");
                 }
                 self.message(error);
                 return;
@@ -682,11 +711,11 @@ impl App {
             let message = if self.scanning {
                 "Scanning folder..."
             } else if self.all_files.is_empty() {
-                "No ARWs in this folder. Cmd+O to open a folder."
+                "No ARWs in this folder. Choose File > Open Folder."
             } else if !self.rating_index_complete {
                 "Reading ratings..."
             } else {
-                "No photos match. Cmd+Option+0 shows all photos."
+                "No photos match. Choose Filter > All photos."
             };
             if let Some(renderer) = &mut self.renderer {
                 renderer.set_image(None);
@@ -1115,6 +1144,7 @@ impl App {
         self.message("Undoing last rating...");
     }
     fn end_peek(&mut self) {
+        self.held_peek = None;
         if let Some(renderer) = &mut self.renderer {
             if renderer.is_peeking() {
                 renderer.end_peek();
@@ -1165,7 +1195,7 @@ impl App {
         self.pinned = Some((path, texture));
         self.sync_gpu_cache();
         self.message(
-            "Reference on left; arrows and ratings affect the right photo. C closes comparison.",
+            "Reference on left; browsing and ratings affect the right photo. Use View to close comparison.",
         );
     }
     fn prepare_foreground_upload(&mut self, width: u32, height: u32) {
@@ -1235,7 +1265,7 @@ impl App {
                         if let Some(path) = resume_path {
                             self.open(path);
                         } else if state.photo.is_some() || state.folder.is_some() {
-                            self.message("Previous folder unavailable. Cmd+O opens a folder.");
+                            self.message("Previous folder unavailable. Choose File > Open Folder.");
                         }
                     }
                     self.status();
@@ -1261,6 +1291,9 @@ impl App {
         self.end_peek();
         if let Some(session) = &self.session_store {
             session.flush();
+        }
+        if let Some(shortcuts) = &self.shortcut_store {
+            shortcuts.flush();
         }
         self.io.flush();
         self.message("Saving ratings...");
@@ -1420,7 +1453,7 @@ impl App {
                     ));
                 } else {
                     if undo && !succeeded {
-                        self.notice = "Could not undo rating (see log); Cmd+Z retries".into();
+                        self.notice = "Could not undo rating (see log); Edit > Undo retries".into();
                     }
                     self.status();
                 }
@@ -1567,7 +1600,8 @@ impl App {
                 self.deleted_batch = false;
                 self.trash_busy = true; self.io.collect_rejected(self.session, files); self.message("Checking saved rejects...");
             }
-            Command::Help => self.alert("ARW Sprint shortcuts", "Right: next\nLeft / Shift+Space: previous\nTab: show / hide bottom thumbnails\nClick thumbnail: open it; scroll strip: browse without changing photo\nSpace / X: move photo + XMP to _Rejected, then advance\nU / 0: clear rating (does not restore a moved photo)\n1–5: stars    Cmd+Z: undo rating or move (last 100 actions this session)\nA: toggle auto-advance after assigning ratings\nCmd+Option+1–5: show only that star rating\nCmd+Option+0: show all photos\nCmd+Option+X: show rejected photos\nFilter menu: rated, unrated, or not rejected\nF: fullscreen    Z: fit / 100%\nL: keep zoom and position between photos\nHold P: temporary 100% peek at pointer; release to restore\nC: pin current photo / close comparison\nShift+C: replace pinned reference with current photo\nComparison: reference left, current right; linked zoom/pan\nS / +: zoom in    D / -: zoom out\n] / [: brighten / darken by 1/3 stop\nBackslash: reset viewing brightness\nBrightness carries across all photos and is saved on quit.\nWheel / pinch: zoom    Drag: pan\nCmd+O: open folder    Cmd+Q: quit\nCmd+Delete: move current rejected photo to Trash\n\nRestores last photo, brightness and A/L preferences on launch.\n100% uses embedded-preview pixels; 256 MiB mode decodes at half resolution.\nFile menu: open _Rejected or move previously marked rejects.\nRatings save to XMP sidecars. Viewing brightness never changes RAW or XMP.\nBrightening the JPEG cannot recover details missing from that preview.\nFolder scanning is not recursive.") ,
+            Command::CustomizeShortcuts => self.customize_shortcuts(),
+            Command::Help => self.alert("ARW Sprint shortcuts", &format!("{}\n\nTwo-finger scroll: pan the photo\nShift + two-finger scroll: zoom\nPinch: zoom\nClick-drag up/down: zoom in/out\nScroll filmstrip: browse without changing the main photo\n\nARW Sprint > Customize Shortcuts changes keyboard bindings.\nBrightness and zoom lock carry across photos. Ratings save to XMP.\nSpace/X defaults move RAW + sidecar into _Rejected, never permanently delete.\n100% uses embedded-preview pixels. Folder scanning is not recursive.", self.shortcuts.help_text())),
             _ => {}
         }
     }
@@ -1581,27 +1615,66 @@ impl App {
         }
     }
     fn key(&mut self, key: Key, repeat: bool) {
-        if self.modifiers.super_key()
-            || self.modifiers.control_key()
-            || self.modifiers.alt_key()
-            || self.quitting
-        {
+        let Some(action) = self.shortcuts.resolve(&key, self.modifiers, repeat) else {
             return;
-        } // Native menu owns Cmd shortcuts.
-        if shortcuts::move_requested(&key, self.modifiers, repeat) {
-            self.move_current_to_deleted();
+        };
+        self.key_action(action, key);
+    }
+
+    fn key_action(&mut self, action: Action, key: Key) {
+        if self.quitting {
             return;
         }
-        match key.as_ref() {
-            Key::Named(NamedKey::Tab) if !repeat => self.command(Command::Filmstrip),
-            Key::Named(NamedKey::ArrowRight) => self.navigate(1),
-            Key::Named(NamedKey::ArrowLeft) => self.navigate(-1),
-            Key::Named(NamedKey::Space) | Key::Character(" ") => {
-                if self.modifiers.shift_key() {
-                    self.navigate(-1);
+        match action {
+            Action::Next => self.navigate(1),
+            Action::Previous => self.navigate(-1),
+            Action::MoveRejected => self.command(Command::MoveDeletedCurrent),
+            Action::ClearRating => self.rating(0),
+            Action::Rate1 => self.rating(1),
+            Action::Rate2 => self.rating(2),
+            Action::Rate3 => self.rating(3),
+            Action::Rate4 => self.rating(4),
+            Action::Rate5 => self.rating(5),
+            Action::Undo => self.command(Command::UndoRating),
+            Action::AutoAdvance => self.command(Command::AutoAdvance),
+            Action::FilterAll => self.command(Command::Filter(PhotoFilter::All)),
+            Action::Filter1 => self.command(Command::Filter(PhotoFilter::Stars(1))),
+            Action::Filter2 => self.command(Command::Filter(PhotoFilter::Stars(2))),
+            Action::Filter3 => self.command(Command::Filter(PhotoFilter::Stars(3))),
+            Action::Filter4 => self.command(Command::Filter(PhotoFilter::Stars(4))),
+            Action::Filter5 => self.command(Command::Filter(PhotoFilter::Stars(5))),
+            Action::FilterRejected => self.command(Command::Filter(PhotoFilter::Rejected)),
+            Action::FilterRated => self.command(Command::Filter(PhotoFilter::Rated)),
+            Action::FilterUnrated => self.command(Command::Filter(PhotoFilter::Unrated)),
+            Action::FilterNotRejected => self.command(Command::Filter(PhotoFilter::NotRejected)),
+            Action::Fullscreen => self.fullscreen(),
+            Action::FitActual => {
+                if let Some(renderer) = &mut self.renderer {
+                    renderer.viewport_mut().toggle_fit_actual();
+                }
+                self.redraw();
+            }
+            Action::ZoomLock => self.command(Command::ZoomLock),
+            Action::Peek => {
+                if self.held_peek.is_none()
+                    && self.current().is_some()
+                    && self.current() == self.displayed
+                {
+                    if let Some(renderer) = &mut self.renderer {
+                        renderer.begin_peek(self.cursor);
+                    }
+                    self.held_peek = Some(key);
+                    self.redraw();
                 }
             }
-            Key::Named(NamedKey::Escape) => {
+            Action::ZoomIn => self.zoom(1.25),
+            Action::ZoomOut => self.zoom(0.8),
+            Action::Brighten => self.command(Command::Brighten),
+            Action::Darken => self.command(Command::Darken),
+            Action::ResetBrightness => self.command(Command::ResetBrightness),
+            Action::Pin => self.command(Command::Pin),
+            Action::ReplacePin => self.command(Command::ReplacePin),
+            Action::Escape => {
                 if self
                     .window
                     .as_ref()
@@ -1612,58 +1685,118 @@ impl App {
                     self.command(Command::Fit);
                 }
             }
-            Key::Character(character) => {
-                let character = character.to_ascii_lowercase();
-                // File moves, ratings and modes act once per press. Navigation
-                // and incremental zoom/brightness may repeat.
-                if repeat
-                    && !matches!(
-                        character.as_str(),
-                        "+" | "=" | "-" | "_" | "s" | "d" | "[" | "]"
-                    )
-                {
-                    return;
-                }
-                match character.as_str() {
-                    "u" | "0" => self.rating(0),
-                    "1" => self.rating(1),
-                    "2" => self.rating(2),
-                    "3" => self.rating(3),
-                    "4" => self.rating(4),
-                    "5" => self.rating(5),
-                    "f" => self.fullscreen(),
-                    "l" => self.command(Command::ZoomLock),
-                    "a" => self.command(Command::AutoAdvance),
-                    "c" => self.command(if self.modifiers.shift_key() {
-                        Command::ReplacePin
-                    } else {
-                        Command::Pin
-                    }),
-                    "p" => {
-                        if self.current().is_some() && self.current() == self.displayed {
-                            if let Some(renderer) = &mut self.renderer {
-                                renderer.begin_peek(self.cursor);
-                            }
-                            self.redraw();
-                        }
+            Action::Open => self.command(Command::Open),
+            Action::OpenRejected => self.command(Command::OpenDeleted),
+            Action::Quit => self.quit(),
+            Action::TrashCurrent => self.command(Command::TrashCurrent),
+            Action::TrashRejected => self.command(Command::TrashRejected),
+            Action::MoveRejectedBatch => self.command(Command::MoveDeletedRejected),
+            Action::Filmstrip => self.command(Command::Filmstrip),
+            Action::Fit => self.command(Command::Fit),
+            Action::Fill => self.command(Command::Fill),
+            Action::Actual => self.command(Command::Actual),
+            Action::Help => self.command(Command::Help),
+            Action::CustomizeShortcuts => self.command(Command::CustomizeShortcuts),
+        }
+    }
+
+    fn release_key(&mut self, key: &Key) {
+        if self.held_peek.as_ref() == Some(key) {
+            self.end_peek();
+        }
+    }
+
+    fn apply_shortcuts(&mut self, bindings: Bindings) {
+        self.end_peek();
+        self.drag_anchor = None;
+        self.shortcuts = bindings;
+        if let Some(menu) = &self.menu {
+            menu.set_shortcuts(&self.shortcuts);
+        }
+    }
+
+    fn shortcut_event(&mut self, event: StoreEvent) {
+        match event {
+            StoreEvent::Loaded(Ok(Some(text))) if !self.shortcuts_changed => {
+                match Bindings::parse(&text) {
+                    Ok(bindings) => self.apply_shortcuts(bindings),
+                    Err(error) => {
+                        eprintln!("Custom shortcuts: {error}");
+                        self.message("Invalid custom shortcuts; using defaults. Open Customize Shortcuts to fix them.");
                     }
-                    "z" => {
-                        if let Some(renderer) = &mut self.renderer {
-                            renderer.viewport_mut().toggle_fit_actual();
-                        }
-                        self.redraw();
-                    }
-                    "+" | "=" | "s" => self.zoom(1.25),
-                    "-" | "_" | "d" => self.zoom(0.8),
-                    "]" => self.command(Command::Brighten),
-                    "[" => self.command(Command::Darken),
-                    "\\" => self.command(Command::ResetBrightness),
-                    _ => {}
                 }
+            }
+            StoreEvent::Loaded(Err(error)) => {
+                eprintln!("Shortcut restore: {error}");
+                self.message("Could not load shortcut preferences (see log)");
+            }
+            StoreEvent::Saved(Err(error)) => {
+                eprintln!("Shortcut save: {error}");
+                self.message("Shortcuts could not be saved; changes apply only for this session");
             }
             _ => {}
         }
     }
+
+    fn customize_shortcuts(&mut self) {
+        if self.smoke.is_some() {
+            return;
+        }
+        self.end_peek();
+        self.drag_anchor = None;
+        let mut rows = self.shortcuts.editor_rows();
+        let mut error = None;
+        while let Some(draft) = crate::platform::edit_shortcuts(&rows, error.as_deref()) {
+            match Bindings::parse(&draft) {
+                Ok(bindings) => {
+                    self.shortcuts_changed = true;
+                    self.apply_shortcuts(bindings);
+                    if let Some(store) = &self.shortcut_store {
+                        store.save(self.shortcuts.serialize());
+                        self.message("Shortcuts updated");
+                    } else {
+                        self.message("Shortcuts changed for this session; saving unavailable");
+                    }
+                    break;
+                }
+                Err(message) => {
+                    // Keep the user's invalid field text visible for correction.
+                    rows = Action::ALL
+                        .iter()
+                        .map(|action| {
+                            let value = draft
+                                .lines()
+                                .find_map(|line| {
+                                    line.split_once('=')
+                                        .filter(|(id, _)| id.trim() == action.id())
+                                        .map(|(_, value)| value.trim().replace('\t', " "))
+                                })
+                                .unwrap_or_else(|| self.shortcuts.keys(*action));
+                            format!("{}\t{}\t{}", action.id(), action.label(), value)
+                        })
+                        .collect::<Vec<_>>()
+                        .join("\n");
+                    error = Some(message);
+                }
+            }
+        }
+        self.modifiers = ModifiersState::empty();
+    }
+
+    fn cursor_moved(&mut self, position: [f64; 2]) {
+        if let Some(anchor) = self.drag_anchor {
+            let scale = self.window.as_ref().map_or(1.0, |w| w.scale_factor());
+            if let Some(renderer) = &mut self.renderer {
+                renderer.zoom(
+                    gestures::drag_zoom(position[1] - self.cursor[1], scale),
+                    Some(anchor),
+                );
+            }
+            self.redraw();
+        }
+        self.cursor = position;
+    }
+
     fn set_brightness(&mut self, steps: i8) {
         // A display preference, independent of navigation, zoom and XMP ratings.
         // Mark even a neutral reset as user intent during asynchronous restore.
@@ -2477,11 +2610,24 @@ impl App {
                         self.command(Command::ResetBrightness);
                     }
                 }
-                _ => {
+                48 => {
                     if self.brightness_steps != 0 || renderer.brightness_stops() != 0.0 {
                         return Err("viewing brightness reset failed after comparison".into());
                     }
                     eprintln!("SMOKE BRIGHTNESS CONTINUITY: navigation/comparison preserved +1 EV; reset restored neutral");
+                    self.smoke_controls()?;
+                    // Return to AppKit so the next step checks real native event routing.
+                    crate::platform::post_shortcut_test_key("b", true, false);
+                }
+                _ => {
+                    if self.brightness_steps != 1 {
+                        return Err(
+                            "custom Command shortcut did not arrive through AppKit/winit".into(),
+                        );
+                    }
+                    self.apply_shortcuts(Bindings::default());
+                    self.set_brightness(0);
+                    eprintln!("SMOKE CUSTOM COMMAND: remapped Cmd+B arrived through AppKit/winit exactly once");
                     eprintln!("SMOKE PASS: folder={} files={} requests={} gpu_hits={} cpu_hits={} prefetch_hits={} managed={:.1}/{:.0}MiB", self.folder.as_ref().map(|p| p.display().to_string()).unwrap_or_default(), self.files.len(), self.requests, self.gpu_hits, self.cpu_hits, self.prefetch_hits, self.managed_used() as f64 /1048576.0, self.managed_limit() as f64 /1048576.0);
                     self.smoke = None;
                     self.quit();
@@ -2538,7 +2684,7 @@ impl ApplicationHandler<Event> for App {
                 renderer.set_brightness_stops(f32::from(self.brightness_steps) / 3.0);
             }
             self.window = Some(window);
-            self.menu = Some(AppMenu::new()?);
+            self.menu = Some(AppMenu::new(&self.shortcuts)?);
             self.status();
             if let Some(path) = self.initial_path.take() {
                 self.open(path);
@@ -2570,6 +2716,7 @@ impl ApplicationHandler<Event> for App {
             Event::ThumbUploaded(event) => self.thumbnail_uploaded(event),
             Event::Io(event) => self.io_event(event, event_loop),
             Event::Session(event) => self.session_event(event),
+            Event::Shortcuts(event) => self.shortcut_event(event),
             Event::Menu(event) => {
                 if let Some(command) = self.menu.as_ref().and_then(|menu| menu.command(&event)) {
                     self.command(command);
@@ -2617,39 +2764,37 @@ impl ApplicationHandler<Event> for App {
             WindowEvent::DroppedFile(path) => self.open(path),
             WindowEvent::ModifiersChanged(modifiers) => self.modifiers = modifiers.state(),
             WindowEvent::KeyboardInput { event, .. } => {
-                if event.state == ElementState::Released
-                    && event.physical_key == PhysicalKey::Code(KeyCode::KeyP)
-                {
-                    self.end_peek();
-                } else if event.state == ElementState::Pressed {
-                    self.key(event.logical_key, event.repeat);
+                let key = event.key_without_modifiers();
+                if event.state == ElementState::Released {
+                    self.release_key(&key);
+                } else if let Some(action) = self.shortcuts.resolve_event(
+                    &key,
+                    &event.logical_key,
+                    self.modifiers,
+                    event.repeat,
+                ) {
+                    self.key_action(action, key);
                 }
             }
             WindowEvent::CursorMoved { position, .. } => {
-                if self.dragging {
-                    if let Some(renderer) = &mut self.renderer {
-                        renderer.pan_at(
-                            position.x - self.cursor[0],
-                            position.y - self.cursor[1],
-                            Some(self.cursor),
-                        );
-                    }
-                    self.redraw();
-                }
-                self.cursor = [position.x, position.y];
+                self.cursor_moved([position.x, position.y])
             }
             WindowEvent::MouseInput {
                 state,
                 button: MouseButton::Left,
                 ..
             } => {
-                self.dragging =
-                    state == ElementState::Pressed && !self.filmstrip_click(self.cursor);
+                self.drag_anchor =
+                    if state == ElementState::Pressed && !self.filmstrip_click(self.cursor) {
+                        Some(self.cursor)
+                    } else {
+                        None
+                    };
             }
             WindowEvent::MouseWheel { delta, .. } => self.scroll(delta),
             WindowEvent::PinchGesture { delta, .. } => self.zoom((1.0 + delta).clamp(0.2, 5.0)),
             WindowEvent::Focused(false) => {
-                self.dragging = false;
+                self.drag_anchor = None;
                 self.modifiers = ModifiersState::empty();
                 self.end_peek();
             }

@@ -12,8 +12,52 @@ static OPEN_CALLBACK: OnceLock<Box<dyn Fn(PathBuf) + Send + Sync>> = OnceLock::n
 
 extern "C" {
     fn fastcull_install_open_handler(callback: extern "C" fn(*const c_char));
+    fn fastcull_edit_shortcuts(rows: *const c_char, error: *const c_char) -> *mut c_char;
+    fn fastcull_free_shortcut_result(result: *mut c_char);
+    fn fastcull_post_shortcut_test_key(character: *const c_char, command: u8, shift: u8);
     fn renamex_np(from: *const c_char, to: *const c_char, flags: u32) -> i32;
     fn pthread_set_qos_class_self_np(qos_class: u32, relative_priority: i32) -> i32;
+}
+
+/// Open the native shortcut editor on the main thread. Rows are tab-separated
+/// action IDs, labels and bindings. Cancel returns `None`; restoring defaults
+/// returns an empty configuration. Validation and persistence stay in Rust.
+pub fn edit_shortcuts(rows: &str, error: Option<&str>) -> Option<String> {
+    let rows = CString::new(rows).ok()?;
+    let error = error.map(CString::new).transpose().ok()?;
+    // Both inputs remain alive throughout the synchronous modal editor. Cocoa
+    // copies their strings and returns either NULL or a strdup-owned UTF-8 string.
+    let result = unsafe {
+        fastcull_edit_shortcuts(
+            rows.as_ptr(),
+            error
+                .as_ref()
+                .map_or(std::ptr::null(), |value| value.as_ptr()),
+        )
+    };
+    if result.is_null() {
+        return None;
+    }
+    // Copy before freeing through the matching C allocator, even if an invalid
+    // UTF-8 result is returned. No foreign pointer escapes this function.
+    let owned = unsafe { CStr::from_ptr(result) }
+        .to_str()
+        .ok()
+        .map(str::to_owned);
+    unsafe { fastcull_free_shortcut_result(result) };
+    owned
+}
+
+/// Inject a key only into this app for the opt-in desktop smoke test. This is
+/// main-thread-only, uses AppKit's local event queue, and requires no input access.
+pub(crate) fn post_shortcut_test_key(character: &str, command: bool, shift: bool) {
+    let Ok(character) = CString::new(character) else {
+        return;
+    };
+    // Cocoa copies the string synchronously; no pointer is retained.
+    unsafe {
+        fastcull_post_shortcut_test_key(character.as_ptr(), u8::from(command), u8::from(shift))
+    };
 }
 
 /// Mark only the calling thumbnail thread as utility work. This cannot lower

@@ -173,7 +173,7 @@ impl App {
         match result {
             Ok(paths) if !paths.is_empty() => {
                 let choice = rfd::MessageDialog::new().set_title("Move rejected photos to _Rejected?")
-                    .set_description(format!("Move {} rejected photograph(s) and their XMP sidecars into the _Rejected folder? Cmd+Z can restore this move while ARW Sprint stays open.", paths.len()))
+                    .set_description(format!("Move {} rejected photograph(s) and their XMP sidecars into the _Rejected folder? Edit > Undo Rating / Move can restore this move while ARW Sprint stays open.", paths.len()))
                     .set_buttons(rfd::MessageButtons::OkCancelCustom("Move to _Rejected".into(), "Cancel".into())).show();
                 if choice == rfd::MessageDialogResult::Custom("Move to _Rejected".into()) {
                     self.move_paths_to_deleted(paths);
@@ -227,7 +227,7 @@ impl App {
         self.start_rating_index();
         self.refresh_visible(preferred.as_deref());
         self.message(format!(
-            "Moved {count} photo(s) to _Rejected. Cmd+Z restores"
+            "Moved {count} photo(s) to _Rejected. Edit > Undo restores"
         ));
         if !errors.is_empty() {
             let details = errors
@@ -314,7 +314,7 @@ impl App {
         ));
         if !details.is_empty() {
             eprintln!("Restore from _Rejected: {details}");
-            self.message("Some photos could not be restored; Cmd+Z retries");
+            self.message("Some photos could not be restored; Edit > Undo retries");
             self.alert("Some photos could not be restored", &details);
         }
     }

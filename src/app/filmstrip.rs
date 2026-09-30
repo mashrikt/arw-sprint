@@ -55,10 +55,16 @@ impl App {
             }
         } else {
             self.strip_scroll = 0.0;
-            self.zoom(match delta {
-                MouseScrollDelta::LineDelta(_, y) => (f64::from(y) * 0.15).clamp(-2.0, 2.0).exp(),
-                MouseScrollDelta::PixelDelta(p) => (p.y * 0.005).clamp(-2.0, 2.0).exp(),
-            });
+            let scale = self.window.as_ref().map_or(1.0, |w| w.scale_factor());
+            match gestures::scroll(delta, self.modifiers.shift_key(), scale) {
+                gestures::Scroll::Pan(dx, dy) => {
+                    if let Some(renderer) = &mut self.renderer {
+                        renderer.pan_at(dx, dy, Some(self.cursor));
+                    }
+                    self.redraw();
+                }
+                gestures::Scroll::Zoom(factor) => self.zoom(factor),
+            }
         }
     }
 
@@ -191,9 +197,9 @@ impl App {
         self.refresh_filmstrip();
         self.arm_thumbnails();
         self.message(if self.filmstrip_visible {
-            "Scroll previews independently; click to open; Tab hides strip"
+            "Scroll previews independently; click to open; View hides strip"
         } else {
-            "Tab shows thumbnails"
+            "View > Show Filmstrip shows thumbnails"
         });
     }
 
