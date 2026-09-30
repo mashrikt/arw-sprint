@@ -1,6 +1,7 @@
 #import <Cocoa/Cocoa.h>
 #import <Carbon/Carbon.h>
 #include <stdlib.h>
+#include <stdio.h>
 #include <string.h>
 
 static void (*fastcullOpenCallback)(const char *) = NULL;
@@ -229,8 +230,26 @@ void fastcull_post_shortcut_test_key(const char *character, uint8_t command, uin
     if (![NSThread isMainThread] || character == NULL) { return; }
     @autoreleasepool {
         NSString *text = [[NSString alloc] initWithUTF8String:character];
-        NSWindow *window = NSApp.keyWindow;
-        if (text.length != 1 || window == nil) { return; }
+        // Fullscreen transitions or another foreground app can leave keyWindow
+        // nil during the opt-in smoke run. Target and activate our own main
+        // window explicitly so the diagnostic tests routing, not focus timing.
+        NSWindow *window = NSApp.keyWindow ?: NSApp.mainWindow;
+        if (window == nil) {
+            for (NSWindow *candidate in NSApp.windows) {
+                if (candidate.isVisible && ![candidate isKindOfClass:NSPanel.class]) {
+                    window = candidate;
+                    break;
+                }
+            }
+        }
+        if (text.length != 1 || window == nil) {
+            fprintf(stderr, "SMOKE NATIVE KEY: no own window available\n");
+            return;
+        }
+        [NSApp activateIgnoringOtherApps:YES];
+        [window makeKeyAndOrderFront:nil];
+        fprintf(stderr, "SMOKE NATIVE KEY: target=%ld key=%d active=%d\n",
+                (long)window.windowNumber, window.isKeyWindow, NSApp.isActive);
         NSString *keys = @"asdfhgzxcv\u00a7bqweryt123465=97-80]ou[ip\rlj'k;\\,/nm.\t `";
         NSRange location = [keys rangeOfString:text.lowercaseString];
         if (location.location == NSNotFound) { return; }

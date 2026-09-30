@@ -35,8 +35,8 @@ Press **Space or X** to move the current photo and its XMP sidecar into a local
 
 Moves and undo update the filmstrip directly, keeping the other thumbnails cached.
 Your selection and strip position stay put whenever those photos are still available.
-For photos restored or moved through Finder, press **Cmd+R** to check the folder
-for changes in the background. You do not need to refresh after moves within the app.
+If you move or restore photos through Finder, include their XMP sidecars, then
+press **Cmd+R** to check for changes. In-app moves need no manual refresh.
 
 Press **Tab** to show the bottom filmstrip. Scroll over it to browse thumbnails
 without changing the main photo, then click a thumbnail to open it.
@@ -71,7 +71,7 @@ The standard macOS shortcuts **Cmd+H**, **Cmd+Option+H**, and **Cmd+M** stay res
 | --- | --- |
 | Right Arrow | Next photo |
 | Left Arrow / Shift+Space | Previous photo |
-| Space / X | Move photo and sidecar to `_Rejected`, then advance |
+| Space / X / Shift+X | Move photo and sidecar to `_Rejected`, then advance |
 | 1 to 5 | Assign stars |
 | U / 0 | Clear rating or rejection metadata; does not restore moved files |
 | Cmd+Z | Undo a rating edit or local move, up to 100 actions this session |
@@ -92,8 +92,8 @@ XMP sidecars in place and cannot be undone with Cmd+Z.
 
 | Key or gesture | Action |
 | --- | --- |
-| S / + / = | Zoom in |
-| D / - / _ | Zoom out |
+| S / Shift+S / + / = | Zoom in |
+| D / Shift+D / - / _ | Zoom out |
 | Z | Switch between fit and 100% |
 | L | Keep zoom and position across photos on / off |
 | Hold P | Peek at 100% under the pointer; release to return |

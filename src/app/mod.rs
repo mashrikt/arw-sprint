@@ -2732,9 +2732,7 @@ impl App {
                 }
                 _ => {
                     if self.brightness_steps != 1 {
-                        return Err(
-                            "custom Command shortcut did not arrive through AppKit/winit".into(),
-                        );
+                        return Err(format!("custom Command shortcut did not arrive through AppKit/winit (brightness_steps={}, modifiers={:?})", self.brightness_steps, self.modifiers));
                     }
                     self.apply_shortcuts(Bindings::default());
                     self.set_brightness(0);
@@ -2876,6 +2874,12 @@ impl ApplicationHandler<Event> for App {
             WindowEvent::ModifiersChanged(modifiers) => self.modifiers = modifiers.state(),
             WindowEvent::KeyboardInput { event, .. } => {
                 let key = event.key_without_modifiers();
+                if self.smoke.as_ref().is_some_and(|smoke| smoke.step >= 49) {
+                    eprintln!(
+                        "SMOKE KEY: base={key:?} logical={:?} modifiers={:?} state={:?}",
+                        event.logical_key, self.modifiers, event.state
+                    );
+                }
                 if event.state == ElementState::Released {
                     self.release_key(&key);
                 } else if let Some(action) = self.shortcuts.resolve_event(
