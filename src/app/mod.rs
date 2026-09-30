@@ -1,6 +1,7 @@
 //! Event-driven desktop shell. Filesystem, JPEG, and GPU uploads run on workers.
 mod deleted;
 mod deletion;
+mod details;
 mod filmstrip;
 mod gestures;
 mod io;
@@ -12,6 +13,7 @@ mod session;
 mod shortcut_store;
 mod shortcuts;
 mod smoke_controls;
+mod smoke_details;
 mod thumbnails;
 mod upload;
 
@@ -106,6 +108,7 @@ struct App {
     thumbnails: ThumbnailWorker,
     thumbnail_budget: Arc<MemoryBudget>,
     filmstrip_visible: bool,
+    photo_details_visible: bool,
     strip_window: crate::browser::filmstrip::FilmstripWindow,
     thumb_cache: VecDeque<(PathBuf, Arc<PreparedTexture>)>,
     thumb_unavailable: HashSet<PathBuf>,
@@ -285,6 +288,7 @@ pub fn run(mut options: Options) -> Result<(), String> {
         thumbnails,
         thumbnail_budget,
         filmstrip_visible: false,
+        photo_details_visible: false,
         strip_window: Default::default(),
         thumb_cache: VecDeque::new(),
         thumb_unavailable: HashSet::new(),
@@ -419,6 +423,7 @@ impl App {
     }
     fn status(&mut self) {
         self.refresh_filmstrip();
+        self.refresh_photo_details();
         let path = self.current();
         if let Some(menu) = &self.menu {
             menu.set_workflow(
@@ -1047,6 +1052,7 @@ impl App {
                     self.notice = "Comparison closed to free memory for the requested photo".into();
                 }
                 self.sync_gpu_cache();
+                self.refresh_photo_details();
                 self.redraw();
             }
             LoaderEvent::Ready {
@@ -1325,6 +1331,7 @@ impl App {
             }
             self.displayed = None;
             self.sync_gpu_cache();
+            self.refresh_photo_details();
             self.redraw();
         }
         if let Some((_, reference)) = &self.pinned {
@@ -1682,6 +1689,7 @@ impl App {
             Command::Filter(filter) => self.set_filter(filter),
             Command::Fullscreen => self.fullscreen(),
             Command::Filmstrip => self.toggle_filmstrip(),
+            Command::PhotoDetails => self.toggle_photo_details(),
             Command::Brighten => self.set_brightness(self.brightness_steps.saturating_add(1)),
             Command::Darken => self.set_brightness(self.brightness_steps.saturating_sub(1)),
             Command::ResetBrightness => self.set_brightness(0),
@@ -1803,6 +1811,7 @@ impl App {
             Action::TrashRejected => self.command(Command::TrashRejected),
             Action::MoveRejectedBatch => self.command(Command::MoveDeletedRejected),
             Action::Filmstrip => self.command(Command::Filmstrip),
+            Action::PhotoDetails => self.command(Command::PhotoDetails),
             Action::Fit => self.command(Command::Fit),
             Action::Fill => self.command(Command::Fill),
             Action::Actual => self.command(Command::Actual),
@@ -2284,6 +2293,18 @@ impl App {
         }
         let step = smoke.step;
         let directory = smoke.directory.clone();
+        if step >= 50
+            && self.photo_details_visible
+            && self
+                .renderer
+                .as_ref()
+                .is_some_and(|renderer| !renderer.photo_details_ready())
+        {
+            if let Some(smoke) = &mut self.smoke {
+                smoke.next = Instant::now() + Duration::from_millis(16);
+            }
+            return;
+        }
         // Keep frames 0–32 identical to the original workflow smoke. Later
         // captures wait for the visible strip, never synchronously for a worker.
         if matches!(step, 33 | 35 | 36 | 37 | 40 | 41 | 42 | 43 | 45)
@@ -2730,13 +2751,62 @@ impl App {
                     // Return to AppKit so the next step checks real native event routing.
                     crate::platform::post_shortcut_test_key("b", true, false);
                 }
-                _ => {
+                49 => {
                     if self.brightness_steps != 1 {
                         return Err(format!("custom Command shortcut did not arrive through AppKit/winit (brightness_steps={}, modifiers={:?})", self.brightness_steps, self.modifiers));
                     }
                     self.apply_shortcuts(Bindings::default());
                     self.set_brightness(0);
                     eprintln!("SMOKE CUSTOM COMMAND: remapped Cmd+B arrived through AppKit/winit exactly once");
+                    self.modifiers = ModifiersState::empty();
+                    if self.pinned.is_some() {
+                        self.command(Command::Pin);
+                    }
+                    self.key(Key::Character("i".into()), false);
+                }
+                50 => {
+                    self.smoke_photo_details_controls(&directory)?;
+                    self.navigate(
+                        if self.navigator.index().unwrap_or(0) + 1 < self.files.len() {
+                            1
+                        } else {
+                            -1
+                        },
+                    );
+                    let renderer = self.renderer.as_mut().ok_or("no EXIF renderer")?;
+                    renderer.capture(&directory.join("exif-transition.ppm"))?;
+                    if !renderer.photo_details_background_ready() {
+                        return Err("EXIF card background was lost during navigation".into());
+                    }
+                }
+                51 => {
+                    self.check_photo_details()?;
+                    self.command(Command::Pin);
+                    self.navigate(
+                        if self.navigator.index().unwrap_or(0) + 1 < self.files.len() {
+                            1
+                        } else {
+                            -1
+                        },
+                    );
+                }
+                52 => {
+                    self.check_photo_details()?;
+                    if let Some(window) = &self.window {
+                        let _ = window.request_inner_size(LogicalSize::new(640.0, 480.0));
+                    }
+                }
+                53 => {
+                    self.check_photo_details()?;
+                    self.command(Command::Pin);
+                    if let Some(window) = &self.window {
+                        let _ = window.request_inner_size(LogicalSize::new(1280.0, 850.0));
+                    }
+                }
+                _ => {
+                    self.check_photo_details()?;
+                    self.command(Command::PhotoDetails);
+                    eprintln!("SMOKE EXIF CONTINUITY: navigation/comparison/resize pass; panel tracks displayed photograph");
                     eprintln!("SMOKE PASS: folder={} files={} requests={} gpu_hits={} cpu_hits={} prefetch_hits={} managed={:.1}/{:.0}MiB", self.folder.as_ref().map(|p| p.display().to_string()).unwrap_or_default(), self.files.len(), self.requests, self.gpu_hits, self.cpu_hits, self.prefetch_hits, self.managed_used() as f64 /1048576.0, self.managed_limit() as f64 /1048576.0);
                     self.smoke = None;
                     self.quit();

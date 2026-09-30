@@ -24,6 +24,7 @@ pub enum Command {
     ReplacePin,
     UndoRating,
     Filmstrip,
+    PhotoDetails,
     Filter(PhotoFilter),
     MoveDeletedCurrent,
     MoveDeletedRejected,
@@ -42,6 +43,7 @@ pub struct AppMenu {
     pin: MenuItem,
     undo: MenuItem,
     filmstrip: CheckMenuItem,
+    photo_details: CheckMenuItem,
     last_workflow: Cell<Option<[bool; 5]>>,
     shortcut_items: Vec<(MenuItem, Action, &'static str)>,
     shortcut_checks: Vec<(CheckMenuItem, Action, &'static str)>,
@@ -240,6 +242,19 @@ impl AppMenu {
         items.push((filmstrip.id().clone(), Command::Filmstrip));
         view.append(&filmstrip).map_err(|e| e.to_string())?;
         shortcut_checks.push((filmstrip.clone(), Action::Filmstrip, "Show Filmstrip"));
+        let photo_details = CheckMenuItem::new(
+            shortcut_label("Photo Details (EXIF)", &bindings.keys(Action::PhotoDetails)),
+            true,
+            false,
+            None,
+        );
+        items.push((photo_details.id().clone(), Command::PhotoDetails));
+        view.append(&photo_details).map_err(|e| e.to_string())?;
+        shortcut_checks.push((
+            photo_details.clone(),
+            Action::PhotoDetails,
+            "Photo Details (EXIF)",
+        ));
         let mut filters = Vec::new();
         for (filter, action) in [
             (PhotoFilter::All, Action::FilterAll),
@@ -291,6 +306,7 @@ impl AppMenu {
             pin,
             undo,
             filmstrip,
+            photo_details,
             last_workflow: Cell::new(None),
             shortcut_items,
             shortcut_checks,
@@ -335,6 +351,10 @@ impl AppMenu {
 
     pub fn set_filmstrip(&self, visible: bool) {
         self.filmstrip.set_checked(visible);
+    }
+
+    pub fn set_photo_details_visible(&self, visible: bool) {
+        self.photo_details.set_checked(visible);
     }
 
     pub fn set_workflow(

@@ -15,8 +15,43 @@ extern "C" {
     fn fastcull_edit_shortcuts(rows: *const c_char, error: *const c_char) -> *mut c_char;
     fn fastcull_free_shortcut_result(result: *mut c_char);
     fn fastcull_post_shortcut_test_key(character: *const c_char, command: u8, shift: u8);
+    fn fastcull_draw_photo_details(
+        content: *const c_char,
+        rgba: *mut u8,
+        width: u32,
+        height: u32,
+        scale: f64,
+    ) -> i32;
     fn renamex_np(from: *const c_char, to: *const c_char, flags: u32) -> i32;
     fn pthread_set_qos_class_self_np(qos_class: u32, relative_priority: i32) -> i32;
+}
+
+/// Rasterize a small offscreen card, never a native view. Safe to call from the
+/// dedicated details worker: Cocoa drawing state and autoreleases are local.
+pub(crate) fn rasterize_photo_details(
+    content: &str,
+    width: u32,
+    height: u32,
+    scale: f64,
+) -> Result<Vec<u8>, String> {
+    if width == 0 || height == 0 || width > 2048 || height > 2048 {
+        return Err("photo details bitmap dimensions are out of range".into());
+    }
+    let content = CString::new(content).map_err(|_| "photo details contain NUL")?;
+    let length = (width as usize)
+        .checked_mul(height as usize)
+        .and_then(|n| n.checked_mul(4))
+        .ok_or("photo details bitmap overflow")?;
+    let mut rgba = vec![0; length];
+    // Rust owns the exactly-sized writable buffer and the C string throughout
+    // the synchronous call. Native code bounds-checks and retains neither.
+    let success = unsafe {
+        fastcull_draw_photo_details(content.as_ptr(), rgba.as_mut_ptr(), width, height, scale)
+    };
+    if success == 0 {
+        return Err("could not rasterize photo details".into());
+    }
+    Ok(rgba)
 }
 
 /// Open the native shortcut editor on the main thread. Rows are tab-separated
@@ -60,7 +95,7 @@ pub(crate) fn post_shortcut_test_key(character: &str, command: bool, shift: bool
     };
 }
 
-/// Mark only the calling thumbnail thread as utility work. This cannot lower
+/// Mark only the calling auxiliary thread as utility work. This cannot lower
 /// the main thread or change priorities of unrelated decode/upload workers.
 pub(crate) fn set_thumbnail_thread_qos() -> io::Result<()> {
     // QOS_CLASS_UTILITY = 0x11 in the macOS SDK sys/qos.h (10.10+).

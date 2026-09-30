@@ -3,6 +3,7 @@
 #[cfg(test)]
 mod brightness_tests;
 mod filmstrip;
+mod photo_details;
 pub mod texture;
 pub mod viewport;
 
@@ -42,6 +43,7 @@ pub struct Renderer {
     queue: Arc<wgpu::Queue>,
     uploader: GpuUploader,
     pipeline: wgpu::RenderPipeline,
+    details_pipeline: wgpu::RenderPipeline,
     background_pipeline: wgpu::RenderPipeline,
     transform_layout: wgpu::BindGroupLayout,
     image_uniform: wgpu::Buffer,
@@ -54,6 +56,7 @@ pub struct Renderer {
     message_transform: wgpu::BindGroup,
     comparison_labels: [Caption; 2],
     filmstrip: filmstrip::Filmstrip,
+    photo_details: photo_details::PhotoDetails,
     image: Option<Arc<PreparedTexture>>,
     reference: Option<(Arc<PreparedTexture>, u16)>,
     orientation: u16,
@@ -235,6 +238,31 @@ impl Renderer {
             bind_group_layouts: &[],
             push_constant_ranges: &[],
         });
+        let details_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("translucent photo details"),
+            layout: Some(&pipeline_layout),
+            vertex: wgpu::VertexState {
+                module: &shader,
+                entry_point: Some("vs_main"),
+                compilation_options: Default::default(),
+                buffers: &[],
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &shader,
+                entry_point: Some("fs_main"),
+                compilation_options: Default::default(),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format,
+                    blend: Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+            }),
+            primitive: wgpu::PrimitiveState::default(),
+            depth_stencil: None,
+            multisample: wgpu::MultisampleState::default(),
+            multiview: None,
+            cache: None,
+        });
         let background_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("opaque background"),
             layout: Some(&background_layout),
@@ -281,6 +309,7 @@ impl Renderer {
             }
         });
         uploader.check_error()?;
+        let photo_details = photo_details::PhotoDetails::new(&device, &transform_layout);
         let mut renderer = Self {
             window,
             surface,
@@ -289,6 +318,7 @@ impl Renderer {
             queue,
             uploader,
             pipeline,
+            details_pipeline,
             background_pipeline,
             transform_layout,
             image_uniform,
@@ -301,6 +331,7 @@ impl Renderer {
             message_transform,
             comparison_labels,
             filmstrip: filmstrip::Filmstrip::new(),
+            photo_details,
             image: None,
             reference: None,
             orientation: 1,
@@ -394,6 +425,7 @@ impl Renderer {
     }
 
     fn update_filmstrip_layout(&mut self) {
+        self.photo_details.invalidate_layout();
         self.filmstrip.resize(
             [self.config.width, self.config.height],
             self.bar_height(),
@@ -413,6 +445,7 @@ impl Renderer {
             let orientation = valid_orientation(orientation.unwrap_or(image.orientation));
             (image, orientation)
         });
+        self.photo_details.invalidate_layout();
         self.update_geometry();
         self.text_dirty = true;
     }
@@ -593,6 +626,42 @@ impl Renderer {
         }
     }
 
+    /// First line is the filename; subsequent lines are label-tab-value rows.
+    /// Raster work is asynchronous and a hidden card retains its last texture.
+    pub fn set_photo_details(&mut self, content: Option<&str>) {
+        self.photo_details.set(content);
+    }
+
+    pub fn photo_details_visible(&self) -> bool {
+        self.photo_details.visible()
+    }
+
+    pub fn photo_details_content(&self) -> Option<&str> {
+        self.photo_details.content()
+    }
+
+    pub fn photo_details_ready(&self) -> bool {
+        self.photo_details.ready()
+    }
+
+    /// Number of raster requests, including work superseded during navigation.
+    pub fn photo_details_rasterizations(&self) -> u64 {
+        self.photo_details.rasterizations()
+    }
+
+    pub fn photo_details_uploads(&self) -> u64 {
+        self.photo_details.uploads()
+    }
+
+    pub fn photo_details_texture_bytes(&self) -> u64 {
+        self.photo_details.texture_bytes()
+    }
+
+    /// A matching empty glass card is ready while new fields are rasterized.
+    pub fn photo_details_background_ready(&self) -> bool {
+        self.photo_details.background_ready()
+    }
+
     pub fn set_message(&mut self, message: &str) {
         if self.message != message {
             self.message = message.chars().take(256).collect();
@@ -710,6 +779,13 @@ impl Renderer {
         self.filmstrip
             .update(&self.uploader, &self.transform_layout, [width, height]);
         let (reference_pane, current_pane) = self.panes();
+        self.photo_details.update(
+            &self.uploader,
+            &self.window,
+            current_pane,
+            [width, height],
+            reference_pane.is_some(),
+        );
         let image_placement = self.viewport.transform_in([width, height], current_pane);
         self.queue.write_buffer(
             &self.image_uniform,
@@ -853,6 +929,14 @@ impl Renderer {
                     pass.draw(0..6, 0..1);
                 }
             }
+            pass.set_pipeline(&self.details_pipeline);
+            pass.set_scissor_rect(
+                current_pane.x,
+                current_pane.y,
+                current_pane.width,
+                current_pane.height,
+            );
+            self.photo_details.draw(&mut pass);
         }
         self.queue.submit([encoder.finish()]);
         let images = (

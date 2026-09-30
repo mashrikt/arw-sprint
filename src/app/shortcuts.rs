@@ -77,6 +77,7 @@ actions! {
     TrashRejected, "trash_rejected", "Confirm Trash for all saved rejects", [], false;
     MoveRejectedBatch, "move_rejected_batch", "Move saved rejects to _Rejected", [], false;
     Filmstrip, "filmstrip", "Show / hide filmstrip", ["Tab"], false;
+    PhotoDetails, "photo_details", "Show / hide photo details (EXIF)", ["I"], false;
     Fit, "fit", "Fit image to window", [], false;
     Fill, "fill", "Fill image viewport", [], false;
     Actual, "actual", "Actual size (100%)", [], false;
@@ -327,7 +328,7 @@ impl Default for Bindings {
 
 impl Bindings {
     /// Missing actions retain defaults; an empty right-hand side unbinds an action.
-    /// A pre-refresh configuration may already use Cmd+R for another action.
+    /// Older configurations keep custom bindings that conflict with new defaults.
     /// Validate the complete map before replacing the live configuration.
     pub(super) fn parse(config: &str) -> Result<Self, String> {
         if config.len() > MAX_CONFIG_BYTES {
@@ -383,12 +384,15 @@ impl Bindings {
             }
             result.bindings[action as usize] = chords;
         }
-        // Refresh was added after customizable shortcuts. Preserve a user's
-        // existing Cmd+R assignment rather than rejecting their entire saved map.
+        // These actions were added after customizable shortcuts. Preserve users'
+        // existing assignments rather than rejecting their entire saved map.
         // The editor emits every action, so explicit conflicts still fail below.
-        if !seen.contains(&Action::RefreshFolder) {
-            let refresh_defaults = result.bindings[Action::RefreshFolder as usize].clone();
-            result.bindings[Action::RefreshFolder as usize] = refresh_defaults
+        for action in [Action::RefreshFolder, Action::PhotoDetails] {
+            if seen.contains(&action) {
+                continue;
+            }
+            let new_defaults = result.bindings[action as usize].clone();
+            result.bindings[action as usize] = new_defaults
                 .into_iter()
                 .filter(|chord| {
                     !seen
@@ -603,6 +607,57 @@ mod tests {
         assert!(existing.keys(Action::RefreshFolder).is_empty());
         assert_eq!(Bindings::parse(&existing.serialize()).unwrap(), existing);
         assert!(Bindings::parse("help = Cmd+R\nrefresh_folder = Cmd+R").is_err());
+    }
+
+    #[test]
+    fn photo_details_toggle_is_non_repeating_and_customizable() {
+        let bindings = Bindings::parse("zoom_in = V").unwrap();
+        assert_eq!(
+            bindings.resolve(&key("i"), ModifiersState::empty(), false),
+            Some(Action::PhotoDetails)
+        );
+        assert_eq!(
+            bindings.resolve(&key("i"), ModifiersState::empty(), true),
+            None
+        );
+        assert_eq!(
+            bindings.resolve(&key("i"), ModifiersState::SUPER, false),
+            None
+        );
+        let remapped = Bindings::parse("photo_details = Cmd+I\nhelp = I").unwrap();
+        assert_eq!(
+            remapped.resolve(&key("i"), ModifiersState::SUPER, false),
+            Some(Action::PhotoDetails)
+        );
+        assert_eq!(
+            remapped.resolve(&key("i"), ModifiersState::empty(), false),
+            Some(Action::Help)
+        );
+        assert!(Bindings::parse("photo_details =")
+            .unwrap()
+            .keys(Action::PhotoDetails)
+            .is_empty());
+        assert_eq!(Bindings::parse(&remapped.serialize()).unwrap(), remapped);
+        assert!(bindings
+            .help_text()
+            .contains("I: Show / hide photo details (EXIF)"));
+    }
+
+    #[test]
+    fn older_custom_i_assignment_survives_photo_details_default() {
+        let existing = Bindings::parse("help = I\nrefresh_folder = Cmd+R").unwrap();
+        assert_eq!(
+            existing.resolve(&key("i"), ModifiersState::empty(), false),
+            Some(Action::Help)
+        );
+        assert!(existing.keys(Action::PhotoDetails).is_empty());
+        assert_eq!(Bindings::parse(&existing.serialize()).unwrap(), existing);
+        assert!(Bindings::parse("help = I\nphoto_details = I").is_err());
+
+        let original = Bindings::parse("help = I\nfit = Cmd+R").unwrap();
+        assert!(original.keys(Action::PhotoDetails).is_empty());
+        assert!(original.keys(Action::RefreshFolder).is_empty());
+        assert_eq!(Bindings::parse(&original.serialize()).unwrap(), original);
     }
 
     #[test]

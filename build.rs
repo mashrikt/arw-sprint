@@ -7,12 +7,14 @@ fn main() {
     );
     cc::Build::new()
         .file("src/platform/macos.m")
+        .file("src/platform/photo_details.m")
         .flag("-fobjc-arc")
         .flag("-mmacosx-version-min=10.15")
         .compile("fastcull_macos");
     println!("cargo:rustc-link-lib=framework=Cocoa");
     println!("cargo:rustc-link-lib=framework=Carbon");
     println!("cargo:rerun-if-changed=src/platform/macos.m");
+    println!("cargo:rerun-if-changed=src/platform/photo_details.m");
 }
 
 #[cfg(not(feature = "desktop"))]

@@ -45,6 +45,10 @@ Hold **Shift** while scrolling to zoom instead. Clicking and dragging up zooms i
 dragging down zooms out. Zoom and position carry over to the next photo by
 default; **L** turns that behavior off or on.
 
+Press **I** for a translucent photo-details card on the right. It shows shutter
+speed, aperture, ISO, focal length, camera, lens and capture time when available.
+Details load in the background and are read-only. Press **I** again to hide it.
+
 Photos too dark to judge? Press **]** to brighten or **[** to darken the view,
 in one-third-stop steps up to ±3 stops. **Backslash (\\)** resets it.
 Brightness applies to every photo, comparison and thumbnail, and stays set after
@@ -107,6 +111,7 @@ XMP sidecars in place and cannot be undone with Cmd+Z.
 | C | Pin the current photo for comparison / close comparison |
 | Shift+C | Replace the pinned reference with the current photo |
 | F | Toggle fullscreen |
+| I | Show / hide the photo-details (EXIF) overlay |
 | Esc | Leave fullscreen; otherwise fit the photo to the window |
 | Cmd+O | Open a folder |
 | Cmd+R | Refresh the current folder after changes made outside the app |
