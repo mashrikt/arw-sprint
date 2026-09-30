@@ -40,10 +40,12 @@ press **Cmd+R** to check for changes. In-app moves need no manual refresh.
 
 Press **Tab** to show the bottom filmstrip. Scroll over it to browse thumbnails
 without changing the main photo, then click a thumbnail to open it.
-Over the main photo, move two fingers on the trackpad to pan, or pinch to zoom.
-Hold **Shift** while scrolling to zoom instead. Clicking and dragging up zooms in;
-dragging down zooms out. Zoom and position carry over to the next photo by
-default; **L** turns that behavior off or on.
+Over the main photo, click and drag with the mouse or move two fingers on the
+trackpad to pan. Pinch to zoom, or hold **Shift** while scrolling.
+**Hold Shift and move the pointer up** to zoom in, or **down** to zoom out.
+No click is needed; it also works while dragging with a mouse or trackpad.
+Zoom and position carry over to the next photo by default;
+**L** turns that behavior off or on.
 
 Press **I** for a translucent photo-details card on the right. It shows shutter
 speed, aperture, ISO, focal length, camera, lens and capture time when available.
@@ -105,7 +107,8 @@ XMP sidecars in place and cannot be undone with Cmd+Z.
 | Shift + two-finger trackpad scroll | Zoom around the pointer |
 | Ordinary mouse wheel over the photo | Zoom around the pointer |
 | Trackpad pinch | Zoom around the pointer |
-| Click and drag the photo up / down | Zoom in / out around where you clicked |
+| Click and drag the photo with mouse or trackpad | Pan in the direction you drag |
+| Shift + pointer movement up / down, with or without a click | Zoom in / out; works with mouse or trackpad |
 | ] / [ | Brighten / darken all previews by one-third stop |
 | Backslash (\\) | Reset viewing brightness |
 | C | Pin the current photo for comparison / close comparison |

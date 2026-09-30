@@ -32,7 +32,7 @@ pub(super) fn scroll(delta: MouseScrollDelta, shift: bool, display_scale: f64) -
 }
 
 pub(super) fn drag_zoom(dy: f64, display_scale: f64) -> f64 {
-    // Drag upwards to zoom in around the initial click, downwards to zoom out.
+    // Shift-pointer upwards zooms in around the gesture anchor; downwards zooms out.
     zoom_factor(-dy / scale(display_scale) * 0.008)
 }
 

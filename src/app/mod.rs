@@ -176,6 +176,7 @@ struct App {
     modifiers: ModifiersState,
     cursor: [f64; 2],
     drag_anchor: Option<[f64; 2]>,
+    shift_zoom_anchor: Option<[f64; 2]>,
     initial_path: Option<PathBuf>,
     quitting: bool,
     trash_busy: bool,
@@ -370,6 +371,7 @@ pub fn run(mut options: Options) -> Result<(), String> {
         modifiers: ModifiersState::empty(),
         cursor: [0.0; 2],
         drag_anchor: None,
+        shift_zoom_anchor: None,
         initial_path: options.path,
         quitting: false,
         trash_busy: false,
@@ -1743,7 +1745,7 @@ impl App {
                 self.trash_busy = true; self.io.collect_rejected(self.session, files); self.message("Checking saved rejects...");
             }
             Command::CustomizeShortcuts => self.customize_shortcuts(),
-            Command::Help => self.alert("ARW Sprint shortcuts", &format!("{}\n\nTwo-finger scroll: pan the photo\nShift + two-finger scroll: zoom\nPinch: zoom\nClick-drag up/down: zoom in/out\nScroll filmstrip: browse without changing the main photo\n\nARW Sprint > Customize Shortcuts changes keyboard bindings.\nBrightness and zoom lock carry across photos. Ratings save to XMP.\nSpace/X defaults move RAW + sidecar into _Rejected, never permanently delete.\n100% uses embedded-preview pixels. Folder scanning is not recursive.", self.shortcuts.help_text())),
+            Command::Help => self.alert("ARW Sprint shortcuts", &format!("{}\n\nTwo-finger scroll: pan the photo\nShift + two-finger scroll: zoom\nPinch: zoom\nClick-drag: pan the photo\nShift + pointer up/down: zoom in/out (no click needed)\nScroll filmstrip: browse without changing the main photo\n\nARW Sprint > Customize Shortcuts changes keyboard bindings.\nBrightness and zoom lock carry across photos. Ratings save to XMP.\nSpace/X defaults move RAW + sidecar into _Rejected, never permanently delete.\n100% uses embedded-preview pixels. Folder scanning is not recursive.", self.shortcuts.help_text())),
             _ => {}
         }
     }
@@ -1924,15 +1926,50 @@ impl App {
                 }
             }
         }
-        self.modifiers = ModifiersState::empty();
+        self.set_modifiers(ModifiersState::empty());
+    }
+
+    fn set_modifiers(&mut self, modifiers: ModifiersState) {
+        if modifiers.shift_key() != self.modifiers.shift_key() {
+            // Start from the next pointer event: modifier updates can arrive
+            // before the first fresh cursor position when entering the window.
+            self.shift_zoom_anchor = None;
+        }
+        self.modifiers = modifiers;
     }
 
     fn cursor_moved(&mut self, position: [f64; 2]) {
-        if let Some(anchor) = self.drag_anchor {
+        if self.modifiers.shift_key() {
+            // Shift alone enables pointer zoom. Keep one anchor for the gesture
+            // and leave filmstrip browsing independent of the main photograph.
+            let over_strip = self.renderer.as_ref().is_some_and(|renderer| {
+                renderer.over_filmstrip(position) || renderer.over_filmstrip(self.cursor)
+            });
             let scale = self.window.as_ref().map_or(1.0, |w| w.scale_factor());
+            if over_strip {
+                self.shift_zoom_anchor = None;
+            } else if let Some(anchor) = self.shift_zoom_anchor {
+                if position[1] != self.cursor[1] {
+                    if let Some(renderer) = &mut self.renderer {
+                        renderer.zoom(
+                            gestures::drag_zoom(position[1] - self.cursor[1], scale),
+                            Some(anchor),
+                        );
+                    }
+                    self.redraw();
+                }
+            } else {
+                // Re-entering the window or leaving the filmstrip starts fresh,
+                // without a jump based on the pointer's previous location.
+                self.shift_zoom_anchor = Some(position);
+            }
+        } else if let Some(anchor) = self.drag_anchor {
             if let Some(renderer) = &mut self.renderer {
-                renderer.zoom(
-                    gestures::drag_zoom(position[1] - self.cursor[1], scale),
+                // Pointer coordinates and viewport deltas are physical pixels.
+                // Keep the original pane when crossing a comparison divider.
+                renderer.pan_at(
+                    position[0] - self.cursor[0],
+                    position[1] - self.cursor[1],
                     Some(anchor),
                 );
             }
@@ -2981,7 +3018,10 @@ impl ApplicationHandler<Event> for App {
                 }
             }
             WindowEvent::DroppedFile(path) if self.navigation_bench.is_none() => self.open(path),
-            WindowEvent::ModifiersChanged(modifiers) => self.modifiers = modifiers.state(),
+            WindowEvent::ModifiersChanged(modifiers) => self.set_modifiers(modifiers.state()),
+            WindowEvent::CursorEntered { .. } | WindowEvent::CursorLeft { .. } => {
+                self.shift_zoom_anchor = None;
+            }
             WindowEvent::KeyboardInput { event, .. } if self.navigation_bench.is_none() => {
                 let key = event.key_without_modifiers();
                 if self.smoke.as_ref().is_some_and(|smoke| smoke.step >= 49) {
@@ -3024,7 +3064,8 @@ impl ApplicationHandler<Event> for App {
             }
             WindowEvent::Focused(false) => {
                 self.drag_anchor = None;
-                self.modifiers = ModifiersState::empty();
+                self.shift_zoom_anchor = None;
+                self.set_modifiers(ModifiersState::empty());
                 self.end_peek();
             }
             _ => {}
