@@ -67,7 +67,7 @@ impl App {
             return None;
         }
         Some(if self.raw.active() {
-            "Preview"
+            "View Preview"
         } else {
             "View RAW"
         })

@@ -21,7 +21,7 @@ use winit::{dpi::PhysicalSize, window::Window};
 
 const STATUS_HEIGHT: u32 = 32;
 const FONT_SCALE: u32 = 2;
-const RAW_BUTTON_WIDTH: u32 = 224;
+const RAW_BUTTON_WIDTH: u32 = 272;
 
 struct TextTexture {
     _texture: wgpu::Texture,
@@ -1309,9 +1309,9 @@ mod raw_button_tests {
     #[test]
     fn hit_area_is_only_the_visible_status_bar_button() {
         assert!(raw_button_contains([1000, 600], 32, [900.0, 580.0]));
-        assert!(raw_button_contains([1000, 600], 32, [776.0, 568.0]));
+        assert!(raw_button_contains([1000, 600], 32, [728.0, 568.0]));
         for point in [
-            [775.0, 580.0],
+            [727.0, 580.0],
             [900.0, 567.0],
             [1000.0, 580.0],
             [900.0, 600.0],
