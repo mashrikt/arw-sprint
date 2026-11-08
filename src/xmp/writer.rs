@@ -1,5 +1,6 @@
 use super::{
-    checked_rating, reader::parse, sidecar_path, XmpError, MAX_SIDECAR_BYTES, RDF_NS, XMP_NS,
+    checked_rating, reader::parse, resolved_sidecar_path, XmpError, MAX_SIDECAR_BYTES, RDF_NS,
+    XMP_NS,
 };
 use std::{
     fs::{self, File, Metadata, OpenOptions},
@@ -162,13 +163,10 @@ fn replace_impl(
     before_commit: impl FnOnce(&Path),
 ) -> Result<Option<i8>, XmpError> {
     rating.map(checked_rating).transpose()?;
-    if !raw_path
-        .extension()
-        .is_some_and(|ext| ext.eq_ignore_ascii_case("arw"))
-    {
-        return Err(XmpError::Invalid("ratings require an ARW source path"));
+    if !crate::browser::directory::is_photo(raw_path) {
+        return Err(XmpError::Invalid("ratings require a supported photo path"));
     }
-    let path = sidecar_path(raw_path);
+    let path = resolved_sidecar_path(raw_path)?;
     let (parent, parent_before) = parent_directory(&path)?;
     let original = snapshot(&path)?;
     let previous = original
@@ -210,6 +208,9 @@ fn replace_impl(
         || parent_before.dev() != parent_after.dev()
         || parent_before.ino() != parent_after.ino()
     {
+        return Err(XmpError::Conflict);
+    }
+    if resolved_sidecar_path(raw_path)? != path {
         return Err(XmpError::Conflict);
     }
     let latest = snapshot(&path)?;
@@ -282,7 +283,7 @@ fn write_impl(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::xmp::read_rating;
+    use crate::xmp::{read_rating, sidecar_path};
     use std::os::unix::fs::{symlink, PermissionsExt};
 
     fn xmp(body: &str) -> String {
@@ -435,6 +436,103 @@ mod tests {
         assert_eq!(fs::read(&raw).unwrap(), b"synthetic raw untouched");
         assert_eq!(fs::read_dir(&directory.0).unwrap().count(), 2);
     }
+
+    #[test]
+    fn same_stem_formats_have_independent_ratings_and_leave_photos_untouched() {
+        let directory = TestDirectory::new();
+        let photos = [
+            "synthetic.ARW",
+            "synthetic.JPG",
+            "synthetic.jPeG",
+            "synthetic.DnG",
+        ]
+        .map(|name| directory.0.join(name));
+        for (index, photo) in photos.iter().enumerate() {
+            fs::write(photo, format!("original photo {index}")).unwrap();
+        }
+        write_rating(&photos[0], 5).unwrap();
+        let arw_xmp = fs::read(sidecar_path(&photos[0])).unwrap();
+        for photo in &photos[1..] {
+            // A stem.xmp belongs to the ARW, even before this photo has its own
+            // rating. Never infer a rating from another format's sidecar.
+            assert_eq!(read_rating(photo).unwrap(), None);
+            assert_eq!(
+                sidecar_path(photo).file_name().unwrap(),
+                format!("{}.xmp", photo.file_name().unwrap().to_str().unwrap()).as_str()
+            );
+        }
+        for (photo, rating) in photos[1..].iter().zip([2, -1, 4]) {
+            write_rating(photo, rating).unwrap();
+        }
+        for (photo, rating) in photos.iter().zip([5, 2, -1, 4]) {
+            assert_eq!(read_rating(photo).unwrap(), Some(rating));
+        }
+        assert_eq!(
+            replace_rating(&photos[1], None, Some(Some(2))).unwrap(),
+            Some(2)
+        );
+        assert_eq!(read_rating(&photos[1]).unwrap(), None);
+        assert_eq!(read_rating(&photos[2]).unwrap(), Some(-1));
+        assert_eq!(read_rating(&photos[3]).unwrap(), Some(4));
+        assert_eq!(fs::read(sidecar_path(&photos[0])).unwrap(), arw_xmp);
+        for (index, photo) in photos.iter().enumerate() {
+            assert_eq!(
+                fs::read(photo).unwrap(),
+                format!("original photo {index}").as_bytes()
+            );
+        }
+        assert_eq!(fs::read_dir(&directory.0).unwrap().count(), 8);
+    }
+
+    #[test]
+    fn uppercase_qualified_sidecar_is_read_and_updated_without_losing_metadata() {
+        let directory = TestDirectory::new();
+        let photo = directory.0.join("synthetic.JPG");
+        let upper = sidecar_path(&photo).with_extension("XMP");
+        let original = xmp("<!--keep this caption--><q:Rating>2</q:Rating>");
+        fs::write(&upper, &original).unwrap();
+        assert_eq!(read_rating(&photo).unwrap(), Some(2));
+        write_rating(&photo, 5).unwrap();
+        assert_eq!(
+            fs::read_to_string(&upper).unwrap(),
+            original.replace("<q:Rating>2</q:Rating>", "<q:Rating>5</q:Rating>")
+        );
+        assert_eq!(fs::read_dir(&directory.0).unwrap().count(), 1);
+    }
+
+    #[test]
+    fn concurrent_uppercase_sidecar_creation_is_not_overwritten() {
+        let directory = TestDirectory::new();
+        let photo = directory.0.join("synthetic.DNG");
+        let upper = sidecar_path(&photo).with_extension("XMP");
+        let external = patch(None, 3).unwrap();
+        let result = write_impl(&photo, 5, |_| fs::write(&upper, &external).unwrap());
+        assert!(matches!(result, Err(XmpError::Conflict)));
+        assert_eq!(fs::read(&upper).unwrap(), external);
+        assert_eq!(read_rating(&photo).unwrap(), Some(3));
+        assert_eq!(fs::read_dir(&directory.0).unwrap().count(), 1);
+    }
+
+    #[test]
+    fn renamed_arw_and_jpeg_cannot_claim_the_same_qualified_sidecar() {
+        let directory = TestDirectory::new();
+        let jpeg = directory.0.join("synthetic.JPG");
+        let raw = directory.0.join("synthetic.JPG.aRw");
+        fs::write(&jpeg, b"JPEG original").unwrap();
+        fs::write(&raw, b"ARW original").unwrap();
+        let existing = patch(None, 3).unwrap();
+        let shared = sidecar_path(&jpeg);
+        assert_eq!(shared, sidecar_path(&raw));
+        fs::write(&shared, &existing).unwrap();
+        for photo in [&jpeg, &raw] {
+            assert!(read_rating(photo).is_err());
+            assert!(write_rating(photo, 5).is_err());
+        }
+        assert_eq!(fs::read(shared).unwrap(), existing);
+        assert_eq!(fs::read(jpeg).unwrap(), b"JPEG original");
+        assert_eq!(fs::read(raw).unwrap(), b"ARW original");
+    }
+
     #[test]
     fn exact_absence_and_expected_rating_are_preserved_atomically() {
         let directory = TestDirectory::new();

@@ -1,5 +1,6 @@
 use super::{
-    checked_rating, sidecar_path, writer::snapshot, XmpError, MAX_SIDECAR_BYTES, RDF_NS, XMP_NS,
+    checked_rating, resolved_sidecar_path, writer::snapshot, XmpError, MAX_SIDECAR_BYTES, RDF_NS,
+    XMP_NS,
 };
 use quick_xml::{
     events::{BytesStart, Event},
@@ -11,7 +12,7 @@ const XML_NS: &str = "http://www.w3.org/XML/1998/namespace";
 const XMLNS_NS: &str = "http://www.w3.org/2000/xmlns/";
 
 pub fn read_rating(raw_path: &Path) -> Result<Option<i8>, XmpError> {
-    let Some(source) = snapshot(&sidecar_path(raw_path))? else {
+    let Some(source) = snapshot(&resolved_sidecar_path(raw_path)?)? else {
         return Ok(None);
     };
     Ok(parse(&source.bytes)?.rating.map(|field| field.value))

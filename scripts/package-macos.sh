@@ -64,6 +64,14 @@ xcrun swift -module-cache-path "$project_dir/target/swift-module-cache" "$projec
 iconutil --convert icns --output "$staged_bundle/Contents/Resources/ARW Sprint.icns" "$iconset"
 install -m 755 "$binary" "$staged_bundle/Contents/MacOS/fastcull"
 install -m 644 "$project_dir/packaging/Info.plist" "$staged_bundle/Contents/Info.plist"
+# The executable statically includes LibRaw under CDDL. Keep its notices and
+# exact source location available to recipients of the standalone app bundle.
+raw_notices="$staged_bundle/Contents/Resources/LibRaw"
+mkdir -p "$raw_notices"
+install -m 644 "$project_dir/vendor/libraw/LICENSE.CDDL" "$raw_notices/LICENSE.CDDL"
+install -m 644 "$project_dir/vendor/libraw/COPYRIGHT" "$raw_notices/COPYRIGHT"
+install -m 644 "$project_dir/docs/libraw-third-party-notices.txt" "$raw_notices/Third-party-notices.txt"
+install -m 644 "$project_dir/vendor/libraw/README.arw-sprint.md" "$raw_notices/Source-and-license.md"
 plutil -lint "$staged_bundle/Contents/Info.plist"
 codesign --force --sign - "$staged_bundle"
 codesign --verify --deep --strict "$staged_bundle"

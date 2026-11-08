@@ -21,6 +21,7 @@ use winit::{dpi::PhysicalSize, window::Window};
 
 const STATUS_HEIGHT: u32 = 32;
 const FONT_SCALE: u32 = 2;
+const RAW_BUTTON_WIDTH: u32 = 224;
 
 struct TextTexture {
     _texture: wgpu::Texture,
@@ -55,6 +56,7 @@ pub struct Renderer {
     message_uniform: wgpu::Buffer,
     message_transform: wgpu::BindGroup,
     comparison_labels: [Caption; 2],
+    raw_button: Option<(String, Caption)>,
     filmstrip: filmstrip::Filmstrip,
     photo_details: photo_details::PhotoDetails,
     image: Option<Arc<PreparedTexture>>,
@@ -330,6 +332,7 @@ impl Renderer {
             message_uniform,
             message_transform,
             comparison_labels,
+            raw_button: None,
             filmstrip: filmstrip::Filmstrip::new(),
             photo_details,
             image: None,
@@ -626,6 +629,52 @@ impl Renderer {
         }
     }
 
+    /// A tiny status-bar control, rasterized only when its label changes.
+    /// Its texture shares the existing caption pipeline and never touches photos.
+    pub fn set_raw_button(&mut self, label: Option<&str>) {
+        if self.raw_button.as_ref().map(|(text, _)| text.as_str()) == label {
+            return;
+        }
+        if self.raw_button.is_some() != label.is_some() {
+            self.text_dirty = true;
+        }
+        self.raw_button = label.map(|label| {
+            let label: String = label.chars().take(32).collect();
+            let (uniform, transform) = transform_binding(&self.device, &self.transform_layout);
+            let text = text_texture(
+                &self.uploader,
+                &format!("[ {label} ]"),
+                RAW_BUTTON_WIDTH,
+                true,
+            );
+            (
+                label,
+                Caption {
+                    text,
+                    uniform,
+                    transform,
+                },
+            )
+        });
+    }
+
+    pub fn raw_button_hit(&self, position: [f64; 2]) -> bool {
+        self.raw_button.is_some()
+            && raw_button_contains(
+                [self.config.width, self.config.height],
+                self.bar_height(),
+                position,
+            )
+    }
+
+    fn raw_button_width(&self) -> u32 {
+        if self.raw_button.is_some() {
+            RAW_BUTTON_WIDTH.min(self.config.width)
+        } else {
+            0
+        }
+    }
+
     /// First line is the filename; subsequent lines are label-tab-value rows.
     /// Raster work is asynchronous and a hidden card retains its last texture.
     pub fn set_photo_details(&mut self, content: Option<&str>) {
@@ -767,7 +816,12 @@ impl Renderer {
             .width
             .min(self.device.limits().max_texture_dimension_2d)
             .max(1);
-        self.status_texture = Some(text_texture(&self.uploader, &self.status, width, true));
+        self.status_texture = Some(text_texture(
+            &self.uploader,
+            &self.status,
+            width.saturating_sub(self.raw_button_width()).max(1),
+            true,
+        ));
         self.message_texture = Some(text_texture(
             &self.uploader,
             &self.message,
@@ -844,6 +898,22 @@ impl Renderer {
                         status.width as f32 / width as f32,
                         bar as f32 / height as f32,
                         status.width as f32 / width as f32 - 1.0,
+                        -1.0 + bar as f32 / height as f32,
+                    ],
+                    1,
+                ),
+            );
+        }
+        if let Some((_, caption)) = &self.raw_button {
+            let button_width = self.raw_button_width();
+            self.queue.write_buffer(
+                &caption.uniform,
+                0,
+                &transform_bytes(
+                    [
+                        button_width as f32 / width as f32,
+                        bar as f32 / height as f32,
+                        1.0 - button_width as f32 / width as f32,
                         -1.0 + bar as f32 / height as f32,
                     ],
                     1,
@@ -932,6 +1002,11 @@ impl Renderer {
                 if let Some(status) = &self.status_texture {
                     pass.set_bind_group(0, &status.binding, &[]);
                     pass.set_bind_group(1, &self.status_transform, &[]);
+                    pass.draw(0..6, 0..1);
+                }
+                if let Some((_, caption)) = &self.raw_button {
+                    pass.set_bind_group(0, &caption.text.binding, &[]);
+                    pass.set_bind_group(1, &caption.transform, &[]);
                     pass.draw(0..6, 0..1);
                 }
             }
@@ -1098,6 +1173,14 @@ fn transform_binding(
     (buffer, binding)
 }
 
+fn raw_button_contains(size: [u32; 2], bar: u32, position: [f64; 2]) -> bool {
+    bar > 0
+        && position[0] >= f64::from(size[0].saturating_sub(RAW_BUTTON_WIDTH))
+        && position[0] < f64::from(size[0])
+        && position[1] >= f64::from(size[1].saturating_sub(bar))
+        && position[1] < f64::from(size[1])
+}
+
 fn transform_bytes(placement: [f32; 4], orientation: u16) -> [u8; 48] {
     photo_transform_bytes(placement, orientation, 1.0)
 }
@@ -1217,5 +1300,26 @@ fn text_texture(
         binding,
         width,
         height,
+    }
+}
+
+#[cfg(test)]
+mod raw_button_tests {
+    use super::raw_button_contains;
+    #[test]
+    fn hit_area_is_only_the_visible_status_bar_button() {
+        assert!(raw_button_contains([1000, 600], 32, [900.0, 580.0]));
+        assert!(raw_button_contains([1000, 600], 32, [776.0, 568.0]));
+        for point in [
+            [775.0, 580.0],
+            [900.0, 567.0],
+            [1000.0, 580.0],
+            [900.0, 600.0],
+            [f64::NAN, 580.0],
+            [900.0, f64::NAN],
+        ] {
+            assert!(!raw_button_contains([1000, 600], 32, point));
+        }
+        assert!(!raw_button_contains([1000, 600], 0, [900.0, 599.0]));
     }
 }

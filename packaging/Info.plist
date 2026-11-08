@@ -34,6 +34,18 @@
             <key>LSHandlerRank</key><string>Alternate</string>
             <key>LSItemContentTypes</key><array><string>com.sony.arw-raw-image</string></array>
         </dict>
+        <dict>
+            <key>CFBundleTypeName</key><string>DNG Photograph</string>
+            <key>CFBundleTypeRole</key><string>Viewer</string>
+            <key>LSHandlerRank</key><string>Alternate</string>
+            <key>LSItemContentTypes</key><array><string>com.adobe.raw-image</string></array>
+        </dict>
+        <dict>
+            <key>CFBundleTypeName</key><string>JPEG Photograph</string>
+            <key>CFBundleTypeRole</key><string>Viewer</string>
+            <key>LSHandlerRank</key><string>Alternate</string>
+            <key>LSItemContentTypes</key><array><string>public.jpeg</string></array>
+        </dict>
     </array>
     <key>UTImportedTypeDeclarations</key>
     <array>

@@ -38,6 +38,11 @@ name = "fastcull-upload-contention-bench"
 path = "src/bin/fastcull-upload-contention-bench.rs"
 required-features = ["desktop"]
 
+[[bin]]
+name = "fastcull-raw-bench"
+path = "src/bin/fastcull-raw-bench.rs"
+required-features = ["desktop"]
+
 [profile.release]
 lto = "thin"
 codegen-units = 1

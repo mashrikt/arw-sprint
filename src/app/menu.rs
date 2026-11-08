@@ -7,6 +7,8 @@ use std::cell::{Cell, RefCell};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Command {
+    ViewRaw,
+    BrowseRaw,
     Open,
     RefreshFolder,
     OpenDeleted,
@@ -93,6 +95,18 @@ impl AppMenu {
             .append(&PredefinedMenuItem::separator())
             .map_err(|e| e.to_string())?;
         add(&application, "Quit ARW Sprint", Command::Quit, Action::Quit)?;
+        add(
+            &view,
+            "View RAW / Preview",
+            Command::ViewRaw,
+            Action::ViewRaw,
+        )?;
+        add(
+            &view,
+            "Toggle RAW Browsing",
+            Command::BrowseRaw,
+            Action::BrowseRaw,
+        )?;
         add(&file, "Open Folder…", Command::Open, Action::Open)?;
         add(
             &file,

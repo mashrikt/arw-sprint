@@ -146,6 +146,7 @@ pub struct DecodedImage {
     pub original_width: u32,
     pub original_height: u32,
     pub scale: u32,
+    pub orientation: u16,
     // Field order matters: the pixels are freed before their reservation.
     _lease: MemoryLease,
 }
@@ -165,6 +166,10 @@ impl std::fmt::Debug for DecodedImage {
 }
 
 impl DecodedImage {
+    pub(crate) fn with_orientation(mut self, orientation: u16) -> Self {
+        self.orientation = orientation;
+        self
+    }
     pub(crate) fn new(
         pixels: Vec<u8>,
         width: u32,
@@ -185,6 +190,7 @@ impl DecodedImage {
             original_width,
             original_height,
             scale,
+            orientation: 1,
             _lease: lease,
         })
     }

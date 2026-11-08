@@ -5,34 +5,46 @@ use std::io;
 use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 
-/// Enumerate one folder without recursion or opening each RAW file.
-///
-/// Only entries with an ARW extension need a file-type lookup. The GUI must call
-/// this on its directory worker, never on its event thread.
+/// Enumerate ARWs for the extraction and benchmark commands. The desktop uses
+/// `scan_photo_paths`/`is_photo`; benchmarks retain their ARW-only meaning.
 pub fn scan_arw_paths(path: &Path) -> io::Result<Vec<PathBuf>> {
+    scan_paths(
+        path,
+        |path| is_visible_photo_name(path) && is_arw(path),
+        "input must be a visible ARW file or directory",
+    )
+}
+
+/// Enumerate one folder without recursion or opening image payloads.
+pub fn scan_photo_paths(path: &Path) -> io::Result<Vec<PathBuf>> {
+    scan_paths(
+        path,
+        is_photo,
+        "input must be an ARW, DNG, JPEG file or directory",
+    )
+}
+
+fn scan_paths(
+    path: &Path,
+    accepts: impl Fn(&Path) -> bool,
+    error: &'static str,
+) -> io::Result<Vec<PathBuf>> {
     let metadata = fs::metadata(path)?;
     if metadata.is_file() {
-        return if is_arw(path) {
+        return if accepts(path) {
             Ok(vec![path.to_path_buf()])
         } else {
-            Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "input file must have an .ARW extension",
-            ))
+            Err(io::Error::new(io::ErrorKind::InvalidInput, error))
         };
     }
     if !metadata.is_dir() {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "input must be an ARW file or directory",
-        ));
+        return Err(io::Error::new(io::ErrorKind::InvalidInput, error));
     }
-
     let mut paths = Vec::new();
     for entry in fs::read_dir(path)? {
         let entry = entry?;
         let path = entry.path();
-        if is_arw(&path) && entry.file_type()?.is_file() {
+        if accepts(&path) && entry.file_type()?.is_file() {
             paths.push(path);
         }
     }
@@ -44,6 +56,32 @@ pub fn scan_arw_paths(path: &Path) -> io::Result<Vec<PathBuf>> {
         .then_with(|| left.cmp(right))
     });
     Ok(paths)
+}
+
+fn is_visible_photo_name(path: &Path) -> bool {
+    path.file_name().is_some_and(|name| {
+        let name = name.as_bytes();
+        // AppleDouble companions have the original photograph's extension.
+        // Other cache/temp suffixes already fail the extension allow-list.
+        // Do not guess from image size or words such as "cache" in real names.
+        !name.starts_with(b".") && !name.starts_with(b"~$")
+    })
+}
+
+pub fn is_photo(path: &Path) -> bool {
+    is_visible_photo_name(path)
+        && path.extension().is_some_and(|extension| {
+            [b"arw".as_slice(), b"dng", b"jpg", b"jpeg"]
+                .iter()
+                .any(|kind| extension.as_bytes().eq_ignore_ascii_case(kind))
+        })
+}
+
+pub fn is_jpeg(path: &Path) -> bool {
+    path.extension().is_some_and(|extension| {
+        extension.as_bytes().eq_ignore_ascii_case(b"jpg")
+            || extension.as_bytes().eq_ignore_ascii_case(b"jpeg")
+    })
 }
 
 pub fn is_arw(path: &Path) -> bool {
@@ -170,5 +208,71 @@ mod tests {
                 }
             }
         }
+    }
+    #[test]
+    fn photo_filter_accepts_mixed_formats_without_hiding_real_cache_names() {
+        for name in [
+            "DSC1.ARW",
+            "DSC2.dNg",
+            "DSC3.JpG",
+            "DSC4.JPEG",
+            "cache.jpg",
+            "thumbnail.ARW",
+            "small.jpeg",
+        ] {
+            assert!(is_photo(Path::new(name)), "{name}");
+        }
+        for name in [
+            "._DSC1.ARW",
+            ".DSC2.jpg",
+            "~$DSC3.dng",
+            "DSC1.ARW.tmp",
+            "DSC1.jpg~",
+            "DSC1.xmp",
+            "DSC1.arw.cache",
+            "DSC1.db",
+            "_Rejected",
+        ] {
+            assert!(!is_photo(Path::new(name)), "{name}");
+        }
+    }
+
+    #[test]
+    fn folder_scan_filters_companions_and_retains_arw_only_benchmark_semantics() {
+        let directory =
+            std::env::temp_dir().join(format!("arw-sprint-formats-{}", std::process::id()));
+        std::fs::create_dir(&directory).unwrap();
+        struct Cleanup(PathBuf);
+        impl Drop for Cleanup {
+            fn drop(&mut self) {
+                let _ = std::fs::remove_dir_all(&self.0);
+            }
+        }
+        let _cleanup = Cleanup(directory.clone());
+        for name in [
+            "DSC10.ARW",
+            "DSC2.DNG",
+            "DSC1.jpg",
+            "DSC3.jpeg",
+            "._DSC10.ARW",
+            ".preview.jpg",
+            "DSC10.ARW.tmp",
+        ] {
+            std::fs::write(directory.join(name), []).unwrap();
+        }
+        std::fs::create_dir(directory.join("folder.ARW")).unwrap();
+        let photos = scan_photo_paths(&directory).unwrap();
+        assert_eq!(
+            photos
+                .iter()
+                .map(|p| p.file_name().unwrap().to_str().unwrap())
+                .collect::<Vec<_>>(),
+            ["DSC1.jpg", "DSC2.DNG", "DSC3.jpeg", "DSC10.ARW"]
+        );
+        assert_eq!(
+            scan_arw_paths(&directory).unwrap(),
+            [directory.join("DSC10.ARW")]
+        );
+        assert!(scan_photo_paths(&directory.join("._DSC10.ARW")).is_err());
     }
 }

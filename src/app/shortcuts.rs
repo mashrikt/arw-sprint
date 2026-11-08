@@ -36,6 +36,8 @@ macro_rules! actions {
 }
 
 actions! {
+    ViewRaw, "view_raw", "Toggle RAW for current photo", ["R"], false;
+    BrowseRaw, "browse_raw", "Toggle RAW browsing (one neighbor ahead)", ["Shift+R"], false;
     Next, "next", "Next photo", ["Right"], true;
     Previous, "previous", "Previous photo", ["Left", "Shift+Space"], true;
     MoveRejected, "move_rejected", "Move current photo to _Rejected", ["Space", "X", "Shift+X"], false;
@@ -577,7 +579,7 @@ mod tests {
         );
         assert_eq!(
             bindings.resolve(&key("r"), ModifiersState::empty(), false),
-            None
+            Some(Action::ViewRaw)
         );
 
         let remapped = Bindings::parse("refresh_folder = Ctrl+R\nhelp = Cmd+R").unwrap();

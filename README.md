@@ -3,7 +3,8 @@
 Pick your keepers from a folder full of Sony RAW photos.
 
 ARW Sprint runs on **Intel Macs with Metal graphics**. It has been tested with
-Sony A7 V `.ARW` files. Other Sony cameras and RAW modes remain unverified.
+Sony A7 V `.ARW` files. JPEG and DNG browsing are also supported; DNG compatibility
+depends on its preview and compression. Other Sony cameras and RAW modes remain unverified.
 Windows and Apple Silicon Macs are not supported.
 
 ![ARW Sprint displaying a Sony RAW photo of a cheetah with the thumbnail filmstrip](docs/images/arw-sprint.png)
@@ -18,7 +19,7 @@ open "dist/ARW Sprint.app"
 ```
 
 Press **Cmd+O** and choose the folder containing your ARWs. You can also drop a
-folder or ARW onto the app. It opens that folder only, without scanning subfolders.
+folder or ARW, DNG or JPEG onto the app. It opens that folder only, without scanning subfolders.
 If the app has not been built yet, follow the build instructions below.
 
 ## Cull a folder
@@ -27,6 +28,8 @@ Use the arrow keys to move through photos. Press **1 to 5** to assign stars, the
 use the **Filter** menu to show a particular rating. For example, choose five
 stars to review only your five-star photos. Choose **All photos** to see everything
 again. Ratings are saved beside each photo in an XMP sidecar and survive restart.
+ARWs use `photo.xmp`; JPEGs and DNGs use `photo.jpg.xmp` and `photo.dng.xmp` so
+same-named originals keep separate ratings. Other apps may not read those latter names.
 
 Press **Space or X** to move the current photo and its XMP sidecar into a local
 `_Rejected` folder, then advance. This does not permanently delete anything.
@@ -56,6 +59,24 @@ in one-third-stop steps up to ±3 stops. **Backslash (\\)** resets it.
 Brightness applies to every photo, comparison and thumbnail, and stays set after
 restarting. It only changes the view, never your RAWs or XMP sidecars. It cannot
 recover details that are missing from the embedded JPEG.
+
+## Check RAW detail
+
+Click **View RAW** at the bottom right, or press **R**, to render the current
+Sony ARW from its sensor data. The preview stays visible while it loads, and your
+zoom and position stay put. Press **R** again to return to the preview.
+**Shift+R** keeps RAW viewing on as you browse and prepares one neighbor ahead.
+Press it again to return to normal browsing. A DNG without a usable JPEG preview
+tries RAW rendering automatically.
+
+RAW is for occasional detail checks. On this Intel Mac, the tested A7 V lossless
+files take roughly **2.5 seconds** to render, versus immediate navigation when a
+preview is cached. It uses a simple camera-white-balance render, so color can differ
+from the camera JPEG. It is not an editor. Normal culling still uses previews.
+RAW work allows up to **384 MiB of temporary decoder memory** on top of the usual
+image-cache budget, with only one RAW job at a time. Use the default 512 MiB cache
+or larger for full-size A7 V RAW viewing. Unsupported files keep their
+preview when available. Lossy JPEG-compressed DNG sensor decoding is not included.
 
 ## Customize shortcuts
 
@@ -101,6 +122,8 @@ XMP sidecars in place and cannot be undone with Cmd+Z.
 | S / Shift+S / + / = | Zoom in |
 | D / Shift+D / - / _ | Zoom out |
 | Z | Switch between fit and 100% |
+| R / View RAW button | Toggle RAW detail for this photo |
+| Shift+R | Toggle RAW browsing, with one neighbor ahead |
 | L | Keep zoom and position across photos on / off |
 | Hold P | Peek at 100% under the pointer; release to return |
 | Two-finger trackpad scroll over the photo | Pan while zoomed |
@@ -154,7 +177,8 @@ in Applications.
 ## What keeps browsing fast
 
 - **Read the preview directly.** File metadata locates the largest embedded JPEG,
-  so opening a photo reads its preview instead of the whole ARW.
+  so normal browsing reads its preview instead of the whole ARW. Hidden files and
+  recognized temporary/cache companions are skipped.
 - **Use Intel acceleration.** The JPEG decoder automatically uses instructions
   supported by your CPU, with compatible fallbacks for older Intel Macs.
 - **Put your current photo first.** Loading and decoding happen on background
@@ -165,11 +189,12 @@ in Applications.
 - **Reuse Metal textures.** Zoom, pan, resize and viewing brightness reuse the
   uploaded image. Background uploads help keep the window responsive during transfers.
 - **Cache the filmstrip.** Tiny embedded previews stay in a rolling cache.
-  Scrolling loads missing cells without changing or reloading the main photo.
+  Scrolling loads missing cells without changing or reloading the main photo. JPEG
+  and DNG files without small thumbnails use reduced JPEG decoding when possible.
 - **Sleep when idle.** Workers wait for work or available memory, and the window
   redraws when needed. A full cache does not make the app keep checking for space.
 
-## Intel measurements, 21 September 2026
+## Intel measurements
 
 Measured on an **Intel Core i7-1068NG7, 4 cores, 32 GB RAM, Iris Plus graphics**.
 We also checked browsing, zoom, and the filmstrip using a folder of
@@ -180,10 +205,14 @@ We also checked browsing, zoom, and the filmstrip using a folder of
 | Intel acceleration enabled | 178.8 to 179.9 ms |
 | Acceleration disabled for comparison | 377.8 to 381.6 ms |
 
-This used six 7008×4672 previews, 18 decodes per process, and two runs with the
+The September 2026 JPEG comparison used six 7008×4672 previews, 18 decodes per process, and two runs with the
 order reversed. Intel acceleration was about **2.1× faster**. These are decode
 times; moving to a cached photo skips that step. Loading an uncached photo can
 still take more than 100 ms.
+
+November RAW checks used actual A7 V lossless ARWs on the same Mac, plus synthetic
+DNG/JPEG fixtures. These do not establish support for every RAW mode. See
+[RAW viewing and format validation](docs/raw-viewing.md) for details.
 
 See the [Intel audit](docs/intel-audit.md) for methods, limits, and graphics results.
 Burst tests and current limits: [rapid culling](docs/rapid-culling.md).

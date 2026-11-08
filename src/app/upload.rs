@@ -27,6 +27,20 @@ pub struct Finished {
     pub result: Result<Arc<PreparedTexture>, String>,
 }
 
+pub struct RawJob {
+    pub id: u64,
+    pub session: u64,
+    pub path: PathBuf,
+    pub image: Arc<DecodedImage>,
+    pub orientation: u16,
+}
+pub struct RawFinished {
+    pub id: u64,
+    pub session: u64,
+    pub path: PathBuf,
+    pub result: Result<Arc<PreparedTexture>, String>,
+}
+
 pub struct ThumbJob {
     pub session: u64,
     pub serial: u64,
@@ -74,8 +88,13 @@ struct QueuedThumbnail {
     job: ThumbJob,
     epoch: u64,
 }
+struct QueuedRaw {
+    job: RawJob,
+    epoch: u64,
+}
 enum Work {
     Photo(Job),
+    Raw(QueuedRaw),
     Thumbnail(QueuedThumbnail),
 }
 #[derive(Default)]
@@ -86,6 +105,9 @@ struct State {
     // No texture ownership: the event loop owns these completed results until
     // it acknowledges delivery. Avoid re-uploading during that delivery gap.
     completed: HashMap<(u64, PathBuf), u64>,
+    raw: Option<QueuedRaw>,
+    raw_epoch: u64,
+    raw_latest: Option<(u64, u64)>,
     thumbnail: Option<QueuedThumbnail>,
     thumbnail_epoch: u64,
     thumbnail_plan: Option<(u64, u64)>,
@@ -100,7 +122,45 @@ impl State {
             self.running = Some((job.session, job.path.clone()));
             return Some(Work::Photo(job));
         }
+        if let Some(job) = self.raw.take() {
+            return Some(Work::Raw(job));
+        }
         self.thumbnail.take().map(Work::Thumbnail)
+    }
+
+    fn request_raw(&mut self, job: RawJob) {
+        if self.stop
+            || self
+                .target
+                .as_ref()
+                .is_none_or(|(session, _, _)| *session != job.session)
+            || self
+                .raw_latest
+                .is_some_and(|(session, id)| session == job.session && id >= job.id)
+        {
+            return;
+        }
+        self.raw_epoch = self.raw_epoch.wrapping_add(1);
+        self.raw_latest = Some((job.session, job.id));
+        self.raw = Some(QueuedRaw {
+            job,
+            epoch: self.raw_epoch,
+        });
+    }
+
+    fn raw_relevant(&self, queued: &QueuedRaw) -> bool {
+        !self.stop
+            && queued.epoch == self.raw_epoch
+            && self.raw_latest == Some((queued.job.session, queued.job.id))
+            && self
+                .target
+                .as_ref()
+                .is_some_and(|(session, _, _)| *session == queued.job.session)
+    }
+
+    fn cancel_raw(&mut self) {
+        self.raw_epoch = self.raw_epoch.wrapping_add(1);
+        self.raw = None;
     }
 
     fn request_thumbnail(&mut self, job: ThumbJob) -> Option<(ThumbJob, &'static str)> {
@@ -212,6 +272,7 @@ impl State {
         self.pending = None;
         self.target = None;
         self.completed.clear();
+        self.cancel_raw();
     }
 }
 pub struct UploadWorker {
@@ -227,6 +288,7 @@ impl UploadWorker {
         loader: Arc<ImageLoader>,
         wake: Arc<dyn Fn(Finished) + Send + Sync>,
         wake_thumb: Arc<dyn Fn(ThumbFinished) + Send + Sync>,
+        wake_raw: Arc<dyn Fn(RawFinished) + Send + Sync>,
     ) -> Result<Self, String> {
         let shared = Arc::new((Mutex::new(State::default()), Condvar::new()));
         let worker = Arc::clone(&shared);
@@ -237,7 +299,11 @@ impl UploadWorker {
                 let work = {
                     let (state, changed) = &*worker;
                     let mut state = state.lock().unwrap_or_else(|e| e.into_inner());
-                    while state.pending.is_none() && state.thumbnail.is_none() && !state.stop {
+                    while state.pending.is_none()
+                        && state.raw.is_none()
+                        && state.thumbnail.is_none()
+                        && !state.stop
+                    {
                         state = changed.wait(state).unwrap_or_else(|e| e.into_inner());
                     }
                     if state.stop {
@@ -247,12 +313,66 @@ impl UploadWorker {
                 };
                 let job = match work {
                     Work::Photo(job) => job,
+                    Work::Raw(queued) => {
+                        {
+                            let mut state = worker.0.lock().unwrap_or_else(|e| e.into_inner());
+                            if !state.raw_relevant(&queued) {
+                                continue;
+                            }
+                            if state.pending.is_some() {
+                                // Yield a dequeued RAW if a fast preview arrived.
+                                // Keep its one queue slot for the next iteration.
+                                state.raw = Some(queued);
+                                continue;
+                            }
+                        }
+                        if let Ok(needed) = GpuUploader::bytes_needed(
+                            queued.job.image.width,
+                            queued.job.image.height,
+                        ) {
+                            loader.evict_for(needed);
+                        }
+                        // One bounded attempt on the same GPU worker and global
+                        // error-scope stack. RAW detail must never occupy the
+                        // worker's three-second preview budget retry loop.
+                        let result = uploader.upload(
+                            Arc::clone(&queued.job.image),
+                            queued.job.orientation,
+                            Arc::clone(&budget),
+                        );
+                        if !worker
+                            .0
+                            .lock()
+                            .unwrap_or_else(|e| e.into_inner())
+                            .raw_relevant(&queued)
+                        {
+                            drop(result);
+                            continue;
+                        }
+                        let RawJob {
+                            id,
+                            session,
+                            path,
+                            image,
+                            ..
+                        } = queued.job;
+                        drop(image);
+                        wake_raw(RawFinished {
+                            id,
+                            session,
+                            path,
+                            result: result.map_err(|error| error.to_string()),
+                        });
+                        continue;
+                    }
                     Work::Thumbnail(queued) => {
                         let relevant = {
                             let state = worker.0.lock().unwrap_or_else(|e| e.into_inner());
                             // A main request can arrive just after thumbnail
                             // dequeue; yield before touching the GPU if so.
-                            state.thumbnail_relevant(&queued) && state.pending.is_none()
+                            state.thumbnail_relevant(&queued)
+                                && state.pending.is_none()
+                                && state.raw.is_none()
                         };
                         if !relevant {
                             thumbnail_wake(ThumbFinished::skipped(
@@ -368,6 +488,25 @@ impl UploadWorker {
             .request(job);
         self.shared.1.notify_one();
     }
+    /// A single replaceable RAW upload. IDs increase within each session;
+    /// canceled/replaced jobs release their pixels without publishing a result.
+    /// Path selection remains with the caller, allowing one neighbor to preload.
+    pub fn request_raw(&self, job: RawJob) {
+        self.shared
+            .0
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .request_raw(job);
+        self.shared.1.notify_one();
+    }
+    pub fn cancel_raw(&self) {
+        self.shared
+            .0
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .cancel_raw();
+        self.shared.1.notify_one();
+    }
     /// At most one queued thumbnail owns CPU pixels. Replacement/cancellation
     /// always acknowledges the old job, so a producer waiting for it can resume.
     pub fn request_thumbnail(&self, job: ThumbJob) {
@@ -432,6 +571,7 @@ impl Drop for UploadWorker {
         let mut state = self.shared.0.lock().unwrap_or_else(|e| e.into_inner());
         state.stop = true;
         state.pending = None;
+        state.cancel_raw();
         let canceled = state.cancel_thumbnails();
         drop(state);
         if let Some(job) = canceled {
@@ -468,7 +608,7 @@ mod tests {
     fn begin(state: &mut State) -> Job {
         match state.take_work().unwrap() {
             Work::Photo(job) => job,
-            Work::Thumbnail(_) => panic!("expected photo upload"),
+            Work::Raw(_) | Work::Thumbnail(_) => panic!("expected photo upload"),
         }
     }
 
@@ -487,7 +627,111 @@ mod tests {
     fn begin_thumb(state: &mut State) -> QueuedThumbnail {
         match state.take_work().unwrap() {
             Work::Thumbnail(job) => job,
-            Work::Photo(_) => panic!("expected thumbnail upload"),
+            Work::Photo(_) | Work::Raw(_) => panic!("expected thumbnail upload"),
+        }
+    }
+
+    fn raw(session: u64, id: u64, path: &str) -> RawJob {
+        let photo = job(session, id, path);
+        RawJob {
+            session,
+            id,
+            path: photo.path,
+            image: photo.image,
+            orientation: photo.orientation,
+        }
+    }
+
+    fn begin_raw(state: &mut State) -> QueuedRaw {
+        match state.take_work().unwrap() {
+            Work::Raw(queued) => queued,
+            Work::Photo(_) | Work::Thumbnail(_) => panic!("expected RAW upload"),
+        }
+    }
+
+    #[test]
+    fn preview_upload_outranks_raw_and_raw_outranks_thumbnail() {
+        let mut state = State::default();
+        state.retarget(1, Path::new("A.ARW"), 1);
+        assert!(state.request_thumbnail(thumb(1, 1, 0)).is_none());
+        state.request_raw(raw(1, 1, "B.ARW"));
+        state.request(job(1, 1, "A.ARW"));
+        let photo = begin(&mut state);
+        assert!(state.raw.is_some() && state.thumbnail.is_some());
+        assert_eq!(state.finish(&photo, true), Some(1));
+        let detail = begin_raw(&mut state);
+        assert!(state.raw_relevant(&detail));
+        assert_eq!(detail.job.path, Path::new("B.ARW"));
+        assert!(state.thumbnail.is_some());
+        let thumbnail = begin_thumb(&mut state);
+        assert!(state.thumbnail_relevant(&thumbnail));
+    }
+
+    #[test]
+    fn raw_replacement_cancellation_and_stale_ids_release_cpu_ownership() {
+        let mut state = State::default();
+        state.retarget(1, Path::new("A.ARW"), 1);
+        let first = raw(1, 2, "A.ARW");
+        let first_pixels = Arc::downgrade(&first.image);
+        state.request_raw(first);
+        let second = raw(1, 3, "B.ARW");
+        let second_pixels = Arc::downgrade(&second.image);
+        state.request_raw(second);
+        assert!(first_pixels.upgrade().is_none());
+        for stale in [raw(1, 2, "A.ARW"), raw(1, 3, "B.ARW"), raw(2, 100, "A.ARW")] {
+            let pixels = Arc::downgrade(&stale.image);
+            state.request_raw(stale);
+            assert!(pixels.upgrade().is_none());
+            assert_eq!(state.raw.as_ref().unwrap().job.id, 3);
+        }
+        state.cancel_raw();
+        assert!(second_pixels.upgrade().is_none());
+        assert!(state.raw.is_none());
+        state.request_raw(raw(1, 3, "B.ARW"));
+        assert!(
+            state.raw.is_none(),
+            "a canceled ID cannot be submitted again"
+        );
+        state.request_raw(raw(1, 4, "A.ARW"));
+        assert_eq!(state.raw.as_ref().unwrap().job.id, 4);
+        state.cancel();
+        assert!(state.raw.is_none());
+    }
+
+    #[test]
+    fn raw_neighbor_survives_navigation_but_not_replacement_cancel_or_session_change() {
+        let mut state = State::default();
+        state.retarget(1, Path::new("A.ARW"), 1);
+        state.request_raw(raw(1, 1, "B.ARW"));
+        let running = begin_raw(&mut state);
+        state.retarget(1, Path::new("B.ARW"), 2);
+        assert!(state.raw_relevant(&running));
+        state.request_raw(raw(1, 2, "C.ARW"));
+        assert!(!state.raw_relevant(&running));
+        let running = begin_raw(&mut state);
+        state.cancel_raw();
+        assert!(!state.raw_relevant(&running));
+        state.request_raw(raw(1, 3, "C.ARW"));
+        let running = begin_raw(&mut state);
+        state.retarget(2, Path::new("C.ARW"), 1);
+        assert!(!state.raw_relevant(&running));
+        state.request_raw(raw(2, 1, "C.ARW"));
+        let running = begin_raw(&mut state);
+        assert!(state.raw_relevant(&running));
+        state.cancel();
+        assert!(!state.raw_relevant(&running));
+    }
+
+    #[test]
+    fn stopped_or_inactive_raw_requests_do_not_retain_pixels() {
+        let mut state = State::default();
+        for stopped in [false, true] {
+            state.stop = stopped;
+            let job = raw(1, 1, "A.ARW");
+            let pixels = Arc::downgrade(&job.image);
+            state.request_raw(job);
+            assert!(pixels.upgrade().is_none());
+            assert!(state.take_work().is_none());
         }
     }
 

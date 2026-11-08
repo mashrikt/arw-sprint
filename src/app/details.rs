@@ -29,8 +29,10 @@ impl App {
         let selected = self.current();
         panel_path(selected.as_deref(), self.displayed.as_deref()).map(|path| {
             let dimensions = self
-                .textures
+                .raw
+                .cache
                 .iter()
+                .chain(self.textures.iter())
                 .find(|(p, _)| p == path)
                 .map(|(_, texture)| (texture.original_width, texture.original_height));
             format_details(path, self.info.get(path), dimensions)
@@ -122,7 +124,7 @@ fn format_details(path: &Path, info: Option<&PhotoInfo>, dimensions: Option<(u32
     }
     let has_exif = fields != 0;
     if let Some((width, height)) = dimensions {
-        let _ = write!(text, "\nPreview size\t{width} × {height}");
+        let _ = write!(text, "\nImage size\t{width} × {height}");
     }
     if metadata.is_none() {
         text.push_str(if info.is_some_and(|info| info.read) {
@@ -167,7 +169,7 @@ mod tests {
             ..Default::default()
         };
         let content = format_details(Path::new("DSC00993.ARW"), Some(&info), Some((7008, 4672)));
-        assert_eq!(content, "DSC00993.ARW\nCamera\tILCE-7M5\nLens\tFE 200-600mm F5.6-6.3 G OSS\nCaptured\t2026-09-20 06:14:23\nShutter\t1.3 s\nAperture\tf/6.3\nISO\t1600\nFocal length\t24.5 mm\nPreview size\t7008 × 4672");
+        assert_eq!(content, "DSC00993.ARW\nCamera\tILCE-7M5\nLens\tFE 200-600mm F5.6-6.3 G OSS\nCaptured\t2026-09-20 06:14:23\nShutter\t1.3 s\nAperture\tf/6.3\nISO\t1600\nFocal length\t24.5 mm\nImage size\t7008 × 4672");
     }
 
     #[test]

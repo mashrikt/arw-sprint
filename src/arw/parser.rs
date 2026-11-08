@@ -29,7 +29,7 @@ impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Io(e) => write!(f, "{e}"),
-            Self::Invalid(s) => write!(f, "malformed or unsupported ARW/JPEG: {s}"),
+            Self::Invalid(s) => write!(f, "malformed or unsupported TIFF/JPEG: {s}"),
             Self::Limit(s) => write!(f, "input safety limit: {s}"),
             Self::NoPreview => write!(f, "no usable embedded JPEG preview found"),
         }
@@ -388,7 +388,13 @@ impl<R: Read + Seek> PreviewReader<R> {
         }
     }
 
-    fn inspect_jpeg(&mut self, offset: u64, length: u64) -> Result<EmbeddedPreview, Error> {
+    /// Inspect a known JPEG byte range without loading its image payload.
+    /// Used for direct JPEGs as well as TIFF-provided preview ranges.
+    pub fn inspect_jpeg(&mut self, offset: u64, length: u64) -> Result<EmbeddedPreview, Error> {
+        if !(4..=MAX_JPEG_BYTES).contains(&length) {
+            return Err(Error::Limit("JPEG byte length"));
+        }
+        checked_range(offset, length, self.file_len)?;
         // Small window; large APP payloads are skipped by their declared segment
         // length, not loaded. Each candidate gets at most 1 MiB of header travel.
         let mut window = [0; 4096];

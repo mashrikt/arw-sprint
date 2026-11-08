@@ -234,7 +234,7 @@ impl IoWorker {
     }
 
     /// Restore is ordered with moves/saves and removes the old-path tombstone
-    /// only after the mover verifies and restores the complete RAW/XMP pair.
+    /// only after the mover verifies and restores the complete photo/XMP pair.
     pub fn restore_deleted(&self, session: u64, op_id: u64, records: Vec<MoveRecord>) {
         self.shared
             .state
@@ -352,7 +352,7 @@ fn move_error(error: &MoveError) -> String {
         return error.to_string();
     }
     format!(
-        "{}; partial operation; RAW location: {}; XMP location: {}. Rating writes at the original path are blocked for safety.",
+        "{}; partial operation; photo location: {}; XMP location: {}. Rating writes at the original path are blocked for safety.",
         error.message,
         error.raw_path.as_ref().map_or_else(|| "unknown or missing".into(), |path| path.display().to_string()),
         error.sidecar_path.as_ref().map_or_else(|| "unknown or absent".into(), |path| path.display().to_string()),
@@ -647,9 +647,9 @@ fn worker(shared: Arc<Shared>, wake: Arc<dyn Fn(IoEvent) + Send + Sync>) {
                         if !std::fs::symlink_metadata(&path)
                             .map_err(|e| e.to_string())?
                             .is_file()
-                            || !crate::browser::directory::is_arw(&path)
+                            || !crate::browser::directory::is_photo(&path)
                         {
-                            return Err("not a regular ARW file".into());
+                            return Err("not a regular supported photo file".into());
                         }
                         if xmp::read_rating(&path).map_err(|e| e.to_string())? != Some(-1) {
                             return Err("photo is no longer marked rejected".into());
@@ -727,6 +727,59 @@ mod tests {
         assert!(errors.is_empty(), "move failed: {errors:?}");
         assert_eq!(records.len(), 1);
         records.pop().unwrap()
+    }
+
+    #[test]
+    fn mixed_format_rating_move_restore_and_undo_remain_independent() {
+        let directory = TestDirectory::new();
+        let raw = directory.raw();
+        let jpeg = raw.with_extension("JPG");
+        let dng = raw.with_extension("DNG");
+        fs::write(&jpeg, b"synthetic JPEG remains unchanged").unwrap();
+        fs::write(&dng, b"synthetic DNG remains unchanged").unwrap();
+        let (events, receive) = mpsc::channel();
+        let io = IoWorker::new(Arc::new(move |event| {
+            events.send(event).unwrap();
+        }))
+        .unwrap();
+        for (revision, path, rating) in [(1, &raw, 2), (2, &jpeg, 5), (3, &dng, -1)] {
+            io.save(1, path.clone(), revision, rating, revision);
+        }
+        io.move_deleted(1, 4, vec![jpeg.clone()]);
+        for revision in 1..=3 {
+            assert!(
+                matches!(next(&receive), IoEvent::Saved { revision: got, result: Ok(()), .. } if got == revision)
+            );
+        }
+        let record = moved(&receive, 4);
+        assert_eq!(xmp::read_rating(&record.destination).unwrap(), Some(5));
+        assert_eq!(xmp::read_rating(&raw).unwrap(), Some(2));
+        assert_eq!(xmp::read_rating(&dng).unwrap(), Some(-1));
+        assert!(raw.exists() && dng.exists());
+        io.restore_deleted(1, 5, vec![record]);
+        assert!(
+            matches!(next(&receive), IoEvent::RestoredDeleted { restored, ratings, failed, .. }
+            if restored.len() == 1 && ratings == vec![(jpeg.clone(), Ok(5))] && failed.is_empty())
+        );
+        io.undo(1, jpeg.clone(), 6, 2);
+        io.flush();
+        assert!(matches!(
+            next(&receive),
+            IoEvent::Saved {
+                undo: true,
+                rating: None,
+                result: Ok(()),
+                ..
+            }
+        ));
+        assert!(matches!(next(&receive), IoEvent::Flushed { failures: 0 }));
+        drop(io);
+        assert_eq!(xmp::read_rating(&jpeg).unwrap(), None);
+        assert_eq!(xmp::read_rating(&raw).unwrap(), Some(2));
+        assert_eq!(xmp::read_rating(&dng).unwrap(), Some(-1));
+        assert_eq!(fs::read(raw).unwrap(), b"synthetic RAW remains unchanged");
+        assert_eq!(fs::read(jpeg).unwrap(), b"synthetic JPEG remains unchanged");
+        assert_eq!(fs::read(dng).unwrap(), b"synthetic DNG remains unchanged");
     }
 
     #[test]

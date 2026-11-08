@@ -135,7 +135,7 @@ impl App {
     }
 
     pub(super) fn move_current_to_deleted(&mut self) {
-        if self.quitting || self.trash_busy || self.smoke.is_some() {
+        if self.quitting || self.trash_busy || self.smoke.is_some() || self.raw_smoke.is_some() {
             return;
         }
         let Some(path) = self
@@ -159,7 +159,7 @@ impl App {
     }
 
     pub(super) fn collect_deleted(&mut self) {
-        if self.quitting || self.trash_busy || self.smoke.is_some() {
+        if self.quitting || self.trash_busy || self.smoke.is_some() || self.raw_smoke.is_some() {
             return;
         }
         if self.scanning {

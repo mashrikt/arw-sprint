@@ -8,6 +8,9 @@ mod io;
 mod menu;
 mod mutation_test;
 mod navigation_bench;
+mod raw_loader;
+mod raw_smoke;
+mod raw_view;
 mod refresh;
 mod scan;
 mod session;
@@ -60,6 +63,8 @@ pub struct Options {
     pub path: Option<PathBuf>,
     pub cache_mb: usize,
     pub smoke_test: Option<PathBuf>,
+    pub raw_smoke_test: Option<PathBuf>,
+    pub format_smoke_test: Option<PathBuf>,
     pub mutation_test: Option<PathBuf>,
     pub navigation_bench_ms: Option<u64>,
     pub navigation_bench_zoom: bool,
@@ -69,6 +74,8 @@ enum Event {
     Scan(Result<scan::ScanResult, (u64, String)>),
     Load(LoaderEvent),
     Uploaded(upload::Finished),
+    RawDecoded(raw_loader::Finished),
+    RawUploaded(upload::RawFinished),
     Io(IoEvent),
     Menu(muda::MenuEvent),
     Session(SessionEvent),
@@ -109,6 +116,8 @@ struct App {
     renderer: Option<Renderer>,
     menu: Option<AppMenu>,
     uploader: Option<upload::UploadWorker>,
+    raw_worker: Option<raw_loader::Worker>,
+    raw: raw_view::RawView,
     thumbnails: ThumbnailWorker,
     thumbnail_budget: Arc<MemoryBudget>,
     filmstrip_visible: bool,
@@ -140,6 +149,7 @@ struct App {
     auto_advance: bool,
     brightness_steps: i8,
     pinned: Option<(PathBuf, Arc<PreparedTexture>)>,
+    pinned_raw: bool,
     rating_history: VecDeque<(u64, deletion::UndoAction)>,
     rating_sequence: u64,
     revision_sequence: u64,
@@ -189,12 +199,30 @@ struct App {
     cpu_hits: u64,
     prefetch_hits: u64,
     smoke: Option<Smoke>,
+    raw_smoke: Option<raw_smoke::Smoke>,
     navigation_bench: Option<navigation_bench::NavigationBench>,
     mutation_test: Option<mutation_test::MutationTest>,
     fatal: Option<String>,
 }
 
 pub fn run(mut options: Options) -> Result<(), String> {
+    if options.format_smoke_test.is_some()
+        && (options.path.is_none()
+            || options.raw_smoke_test.is_some()
+            || options.smoke_test.is_some()
+            || options.mutation_test.is_some()
+            || options.navigation_bench_ms.is_some())
+    {
+        return Err("format smoke needs its fixture folder and no other diagnostics".into());
+    }
+    if options.raw_smoke_test.is_some()
+        && (options.path.is_none()
+            || options.smoke_test.is_some()
+            || options.mutation_test.is_some()
+            || options.navigation_bench_ms.is_some())
+    {
+        return Err("RAW smoke test needs a photo folder and no other diagnostic mode".into());
+    }
     if let Some(ms) = options.navigation_bench_ms {
         if !(20..=2000).contains(&ms)
             || options.path.is_none()
@@ -219,7 +247,9 @@ pub fn run(mut options: Options) -> Result<(), String> {
     if let Some(test) = &mutation_test {
         options.path = Some(test.folder.clone());
     }
-    let diagnostic = options.smoke_test.is_some()
+    let diagnostic = options.format_smoke_test.is_some()
+        || options.raw_smoke_test.is_some()
+        || options.smoke_test.is_some()
         || mutation_test.is_some()
         || options.navigation_bench_ms.is_some();
     let event_loop = EventLoop::<Event>::with_user_event()
@@ -304,6 +334,8 @@ pub fn run(mut options: Options) -> Result<(), String> {
         renderer: None,
         menu: None,
         uploader: None,
+        raw_worker: None,
+        raw: Default::default(),
         thumbnails,
         thumbnail_budget,
         filmstrip_visible: false,
@@ -335,6 +367,7 @@ pub fn run(mut options: Options) -> Result<(), String> {
         auto_advance: false,
         brightness_steps: 0,
         pinned: None,
+        pinned_raw: false,
         rating_history: VecDeque::new(),
         rating_sequence: 0,
         revision_sequence: 0,
@@ -386,6 +419,14 @@ pub fn run(mut options: Options) -> Result<(), String> {
         navigation_bench: options
             .navigation_bench_ms
             .map(|ms| navigation_bench::NavigationBench::new(ms, options.navigation_bench_zoom)),
+        raw_smoke: if let Some(directory) = options.format_smoke_test {
+            Some(raw_smoke::Smoke::new_mixed(directory)?)
+        } else {
+            options
+                .raw_smoke_test
+                .map(raw_smoke::Smoke::new)
+                .transpose()?
+        },
         smoke: options.smoke_test.map(|directory| Smoke {
             directory,
             step: 0,
@@ -409,6 +450,7 @@ pub fn run(mut options: Options) -> Result<(), String> {
     event_loop.set_control_flow(ControlFlow::Wait);
     event_loop.run_app(&mut app).map_err(|e| e.to_string())?;
     app.generation.fetch_add(1, Ordering::AcqRel);
+    app.raw_worker.take();
     app.uploader.take();
     if app.log {
         eprintln!("navigation requests={} gpu_hits={} cpu_hits={} prefetch_hits={} managed_memory={:.1}MiB/{:.0}MiB", app.requests, app.gpu_hits, app.cpu_hits, app.prefetch_hits, app.managed_used() as f64 / 1048576.0, app.managed_limit() as f64 / 1048576.0);
@@ -472,7 +514,13 @@ impl App {
                 rating,
                 path.file_name().unwrap_or_default().to_string_lossy()
             );
-            if let Some((_, texture)) = self.textures.iter().find(|(p, _)| p == path) {
+            if let Some((_, texture)) = self
+                .raw
+                .cache
+                .iter()
+                .chain(self.textures.iter())
+                .find(|(p, _)| p == path)
+            {
                 text.push_str(&format!(
                     "    {}x{}",
                     texture.original_width, texture.original_height
@@ -574,7 +622,12 @@ impl App {
                     .unwrap_or_else(|| "Sony ARW viewer".into())
             ));
         }
+        if path.is_some() {
+            text = format!("{}    {text}", self.raw_status());
+        }
+        let raw_button = self.raw_button_label();
         if let Some(renderer) = &mut self.renderer {
+            renderer.set_raw_button(raw_button);
             renderer.set_status(&text);
         }
         self.redraw();
@@ -597,6 +650,7 @@ impl App {
         self.stop_thumbnail_work();
         self.thumb_cache.clear();
         self.thumb_unavailable.clear();
+        self.reset_raw();
         self.strip_window.reset();
         self.clear_pin();
         self.end_peek();
@@ -790,6 +844,7 @@ impl App {
             self.files = visible;
             self.navigator = Navigator::new(self.files.len());
             self.navigator.seek(selected.unwrap_or(0));
+            self.reconcile_raw();
             self.loader.set_files(self.session, Arc::clone(&self.files));
             let paths: HashSet<_> = self.files.iter().collect();
             self.textures.retain(|(path, _)| paths.contains(path));
@@ -827,7 +882,7 @@ impl App {
                         self.generation.load(Ordering::Acquire),
                         self.navigator.direction(),
                     );
-                    self.loader.resume_prefetch();
+                    self.resume_preview_prefetch();
                     self.prefetch_gpu();
                 }
             } else {
@@ -840,7 +895,7 @@ impl App {
             let message = if self.scanning {
                 "Scanning folder..."
             } else if self.all_files.is_empty() {
-                "No ARWs in this folder. Choose File > Open Folder."
+                "No ARW, DNG or JPEG photos in this folder. Choose File > Open Folder."
             } else if !self.rating_index_complete {
                 "Reading ratings..."
             } else {
@@ -901,9 +956,17 @@ impl App {
         if !self.info.get(&path).is_some_and(|info| info.read) {
             self.io.read(self.session, path.clone());
         }
+        if self.raw_navigation(&path) {
+            self.loader
+                .request_cached(index, generation, self.navigator.direction());
+            self.schedule_raw();
+            self.status();
+            self.arm_thumbnails();
+            return;
+        }
         if !self.textures.iter().any(|(p, _)| p == &path) {
             if let Some((reference, texture)) = &self.pinned {
-                if reference == &path {
+                if reference == &path && !self.pinned_raw {
                     self.textures.push_back((path.clone(), Arc::clone(texture)));
                 }
             }
@@ -920,7 +983,7 @@ impl App {
             self.loader
                 .request_cached(index, generation, self.navigator.direction());
             self.show(path, texture);
-            self.loader.resume_prefetch();
+            self.resume_preview_prefetch();
             self.prefetch_gpu();
         } else {
             self.textures.retain(|(p, _)| {
@@ -951,8 +1014,12 @@ impl App {
             .get(&path)
             .and_then(|i| i.metadata.as_ref())
             .map_or(texture.orientation, |m| m.orientation);
+        let switching_source = self.raw.displayed && self.displayed.as_ref() == Some(&path);
+        self.raw.displayed = false;
         if let Some(renderer) = &mut self.renderer {
+            renderer.set_preserve_view(self.zoom_locked || switching_source);
             renderer.set_image_with_orientation(Some(Arc::clone(&texture)), orientation);
+            renderer.set_preserve_view(self.zoom_locked);
             renderer.set_message("");
         }
         self.displayed = Some(path.clone());
@@ -964,6 +1031,7 @@ impl App {
         }
         self.first_render = true;
         self.sync_gpu_cache();
+        self.schedule_raw();
         self.status();
         if self.rating_view_dirty {
             let previous = self.current();
@@ -974,9 +1042,10 @@ impl App {
         let mut indices: Vec<_> = self
             .textures
             .iter()
+            .chain(self.raw.cache.iter())
             .filter_map(|(path, _)| self.files.iter().position(|p| p == path))
             .collect();
-        if let Some((path, _)) = &self.pinned {
+        if let Some((path, _)) = self.pinned.as_ref().filter(|_| !self.pinned_raw) {
             if let Some(index) = self.files.iter().position(|p| p == path) {
                 if !indices.contains(&index) {
                     indices.push(index);
@@ -994,7 +1063,16 @@ impl App {
             crate::browser::prefetch::Direction::Backward => index.checked_sub(1),
         }
     }
+    fn resume_preview_prefetch(&self) {
+        if !self.raw.active() {
+            self.loader.resume_prefetch();
+        }
+    }
     fn prefetch_gpu(&mut self) {
+        if self.raw.active() {
+            self.schedule_raw();
+            return;
+        }
         if self.quitting
             || self.pending_upload.is_some()
             || self.pending_gpu_prefetch.is_some()
@@ -1029,7 +1107,7 @@ impl App {
         // seconds while holding the CPU prefetch worker. Keep the decoded next
         // photo instead; foreground navigation can release the outgoing image.
         if self.pinned.is_some() && self.budget.available() < needed {
-            self.loader.resume_prefetch();
+            self.resume_preview_prefetch();
             return;
         }
         let generation = self.generation.load(Ordering::Acquire);
@@ -1037,7 +1115,7 @@ impl App {
             .info
             .get(&path)
             .and_then(|i| i.metadata.as_ref())
-            .map_or(1, |m| m.orientation);
+            .map_or(image.orientation, |m| m.orientation);
         self.pending_gpu_prefetch = Some((generation, path.clone()));
         self.attempted_gpu_prefetch = Some(path.clone());
         if let Some(uploader) = &self.uploader {
@@ -1088,7 +1166,8 @@ impl App {
                 && Some(index) == self.navigator.index()
                 && generation == self.generation.load(Ordering::Acquire)
                 && self.pending_upload != Some(generation)
-                && self.current() != self.displayed =>
+                && (self.current() != self.displayed
+                    || (self.raw.displayed && !self.raw.active())) =>
             {
                 let Some(image) = self.loader.get(index) else {
                     return;
@@ -1107,7 +1186,7 @@ impl App {
                     .info
                     .get(&path)
                     .and_then(|i| i.metadata.as_ref())
-                    .map_or(1, |m| m.orientation);
+                    .map_or(image.orientation, |m| m.orientation);
                 self.pending_upload = Some(generation);
                 self.prepare_foreground_upload(image.width, image.height);
                 if let Some(uploader) = &self.uploader {
@@ -1145,7 +1224,9 @@ impl App {
                     renderer.set_image(None);
                     renderer.set_message("Preview unavailable - use arrows to continue");
                 }
+                self.raw.displayed = false;
                 self.message("Preview unavailable");
+                self.raw_fallback(self.files[index].clone());
             }
             _ => {}
         }
@@ -1159,7 +1240,7 @@ impl App {
         }
         let is_current = self.current().as_ref() == Some(&event.path);
         if is_current
-            && (self.current() == self.displayed
+            && ((self.current() == self.displayed && (!self.raw.displayed || self.raw.active()))
                 || (event.result.is_err()
                     && event.generation != self.generation.load(Ordering::Acquire)))
         {
@@ -1196,7 +1277,7 @@ impl App {
                     }
                 }
             }
-            self.loader.resume_prefetch();
+            self.resume_preview_prefetch();
             return;
         }
         self.pending_upload = None;
@@ -1212,7 +1293,7 @@ impl App {
                 if let Some(index) = self.navigator.index() {
                     self.loader.discard(index);
                 }
-                self.loader.resume_prefetch();
+                self.resume_preview_prefetch();
                 self.prefetch_gpu();
             }
             Err(error) => {
@@ -1228,7 +1309,7 @@ impl App {
         }
     }
     fn rating(&mut self, rating: i8) {
-        if self.quitting || self.trash_busy || self.smoke.is_some() {
+        if self.quitting || self.trash_busy || self.smoke.is_some() || self.raw_smoke.is_some() {
             return;
         }
         let Some(path) = self
@@ -1257,7 +1338,7 @@ impl App {
         self.refresh_visible(preferred.as_deref());
     }
     fn undo_rating(&mut self) {
-        if self.quitting || self.trash_busy || self.smoke.is_some() {
+        if self.quitting || self.trash_busy || self.smoke.is_some() || self.raw_smoke.is_some() {
             return;
         }
         let Some((edit_id, action)) = self.rating_history.pop_back() else {
@@ -1304,7 +1385,7 @@ impl App {
         if self.pinned.is_some() && !replace {
             self.clear_pin();
             self.sync_gpu_cache();
-            self.loader.resume_prefetch();
+            self.resume_preview_prefetch();
             self.message("Comparison closed");
             return;
         }
@@ -1314,22 +1395,28 @@ impl App {
         else {
             return;
         };
-        let Some(texture) = self
-            .textures
-            .iter()
-            .find(|(p, _)| *p == path)
-            .map(|(_, t)| Arc::clone(t))
-        else {
+        let Some(texture) = (if self.raw.displayed {
+            &self.raw.cache
+        } else {
+            &self.textures
+        })
+        .iter()
+        .find(|(p, _)| *p == path)
+        .map(|(_, t)| Arc::clone(t)) else {
             return;
         };
-        let orientation = self
-            .info
-            .get(&path)
-            .and_then(|i| i.metadata.as_ref())
-            .map_or(texture.orientation, |m| m.orientation);
+        let orientation = if self.raw.displayed {
+            texture.orientation
+        } else {
+            self.info
+                .get(&path)
+                .and_then(|i| i.metadata.as_ref())
+                .map_or(texture.orientation, |m| m.orientation)
+        };
         if let Some(renderer) = &mut self.renderer {
             renderer.set_reference(Some(Arc::clone(&texture)), Some(orientation));
         }
+        self.pinned_raw = self.raw.displayed;
         self.pinned = Some((path, texture));
         self.sync_gpu_cache();
         self.message(
@@ -1425,6 +1512,7 @@ impl App {
             return;
         }
         self.quitting = true;
+        self.cancel_raw_work();
         self.stop_thumbnail_work();
         self.restore_allowed = false;
         self.end_peek();
@@ -1504,12 +1592,12 @@ impl App {
                         }
                     }
                 }
-                if self.displayed.as_ref() == Some(&path) {
+                if self.displayed.as_ref() == Some(&path) && !self.raw.displayed {
                     if let (Some(renderer), Some(metadata)) = (&mut self.renderer, &info.metadata) {
                         renderer.set_orientation(metadata.orientation);
                     }
                 }
-                if self.pinned.as_ref().is_some_and(|(p, _)| p == &path) {
+                if !self.pinned_raw && self.pinned.as_ref().is_some_and(|(p, _)| p == &path) {
                     if let (Some(renderer), Some(metadata)) = (&mut self.renderer, &info.metadata) {
                         renderer.set_reference_orientation(metadata.orientation);
                     }
@@ -1686,13 +1774,17 @@ impl App {
         }
     }
     fn command(&mut self, command: Command) {
-        if self.navigation_bench.is_some() && !matches!(command, Command::Quit) {
+        if (self.navigation_bench.is_some() || self.raw_smoke.is_some())
+            && !matches!(command, Command::Quit)
+        {
             return;
         }
         if self.quitting {
             return;
         }
         match command {
+            Command::ViewRaw => self.toggle_raw(false),
+            Command::BrowseRaw => self.toggle_raw(true),
             Command::RefreshFolder => self.refresh_folder(),
             Command::Open if !self.trash_busy => {
                 self.restore_allowed = false;
@@ -1745,7 +1837,7 @@ impl App {
                 self.trash_busy = true; self.io.collect_rejected(self.session, files); self.message("Checking saved rejects...");
             }
             Command::CustomizeShortcuts => self.customize_shortcuts(),
-            Command::Help => self.alert("ARW Sprint shortcuts", &format!("{}\n\nTwo-finger scroll: pan the photo\nShift + two-finger scroll: zoom\nPinch: zoom\nClick-drag: pan the photo\nShift + pointer up/down: zoom in/out (no click needed)\nScroll filmstrip: browse without changing the main photo\n\nARW Sprint > Customize Shortcuts changes keyboard bindings.\nBrightness and zoom lock carry across photos. Ratings save to XMP.\nSpace/X defaults move RAW + sidecar into _Rejected, never permanently delete.\n100% uses embedded-preview pixels. Folder scanning is not recursive.", self.shortcuts.help_text())),
+            Command::Help => self.alert("ARW Sprint shortcuts", &format!("{}\n\nTwo-finger scroll: pan the photo\nShift + two-finger scroll: zoom\nPinch: zoom\nClick-drag: pan the photo\nShift + pointer up/down: zoom in/out (no click needed)\nScroll filmstrip: browse without changing the main photo\n\nARW Sprint > Customize Shortcuts changes keyboard bindings.\nBrightness and zoom lock carry across photos. Ratings save to XMP.\nSpace/X defaults move RAW + sidecar into _Rejected, never permanently delete.\n100% uses embedded-preview pixels by default; View RAW loads sensor detail on demand. Folder scanning is not recursive.", self.shortcuts.help_text())),
             _ => {}
         }
     }
@@ -1770,6 +1862,8 @@ impl App {
             return;
         }
         match action {
+            Action::ViewRaw => self.toggle_raw(false),
+            Action::BrowseRaw => self.toggle_raw(true),
             Action::Next => self.navigate(1),
             Action::Previous => self.navigate(-1),
             Action::MoveRejected => self.command(Command::MoveDeletedCurrent),
@@ -1943,7 +2037,10 @@ impl App {
             // Shift alone enables pointer zoom. Keep one anchor for the gesture
             // and leave filmstrip browsing independent of the main photograph.
             let over_strip = self.renderer.as_ref().is_some_and(|renderer| {
-                renderer.over_filmstrip(position) || renderer.over_filmstrip(self.cursor)
+                renderer.over_filmstrip(position)
+                    || renderer.over_filmstrip(self.cursor)
+                    || renderer.raw_button_hit(position)
+                    || renderer.raw_button_hit(self.cursor)
             });
             let scale = self.window.as_ref().map_or(1.0, |w| w.scale_factor());
             if over_strip {
@@ -2917,6 +3014,15 @@ impl ApplicationHandler<Event> for App {
             }));
             let proxy = self.proxy.clone();
             let thumb_proxy = self.proxy.clone();
+            let raw_proxy = self.proxy.clone();
+            let raw_decode_proxy = self.proxy.clone();
+            self.raw_worker = Some(raw_loader::Worker::new(
+                Arc::clone(&self.budget),
+                Arc::clone(&self.loader),
+                Arc::new(move |event| {
+                    let _ = raw_decode_proxy.send_event(Event::RawDecoded(event));
+                }),
+            )?);
             self.uploader = Some(upload::UploadWorker::new(
                 renderer.uploader(),
                 Arc::clone(&self.budget),
@@ -2927,6 +3033,9 @@ impl ApplicationHandler<Event> for App {
                 }),
                 Arc::new(move |event| {
                     let _ = thumb_proxy.send_event(Event::ThumbUploaded(event));
+                }),
+                Arc::new(move |event| {
+                    let _ = raw_proxy.send_event(Event::RawUploaded(event));
                 }),
             )?);
             self.renderer = Some(renderer);
@@ -2953,7 +3062,9 @@ impl ApplicationHandler<Event> for App {
     }
     fn user_event(&mut self, event_loop: &ActiveEventLoop, event: Event) {
         match event {
-            Event::Open(path) if self.navigation_bench.is_none() => self.open(path),
+            Event::Open(path) if self.navigation_bench.is_none() && self.raw_smoke.is_none() => {
+                self.open(path)
+            }
             Event::Open(_) => {}
             Event::Scan(result) => self.scanned(result),
             Event::Load(event) => {
@@ -2964,6 +3075,8 @@ impl ApplicationHandler<Event> for App {
                 self.uploaded(event);
                 self.arm_thumbnails();
             }
+            Event::RawDecoded(event) => self.raw_decoded(event),
+            Event::RawUploaded(event) => self.raw_uploaded(event),
             Event::Thumbnail(event) => self.thumbnail_event(event),
             Event::ThumbUploaded(event) => self.thumbnail_uploaded(event),
             Event::PhotoDetailsReady => self.redraw(),
@@ -3017,12 +3130,18 @@ impl ApplicationHandler<Event> for App {
                     }
                 }
             }
-            WindowEvent::DroppedFile(path) if self.navigation_bench.is_none() => self.open(path),
+            WindowEvent::DroppedFile(path)
+                if self.navigation_bench.is_none() && self.raw_smoke.is_none() =>
+            {
+                self.open(path)
+            }
             WindowEvent::ModifiersChanged(modifiers) => self.set_modifiers(modifiers.state()),
             WindowEvent::CursorEntered { .. } | WindowEvent::CursorLeft { .. } => {
                 self.shift_zoom_anchor = None;
             }
-            WindowEvent::KeyboardInput { event, .. } if self.navigation_bench.is_none() => {
+            WindowEvent::KeyboardInput { event, .. }
+                if self.navigation_bench.is_none() && self.raw_smoke.is_none() =>
+            {
                 let key = event.key_without_modifiers();
                 if self.smoke.as_ref().is_some_and(|smoke| smoke.step >= 49) {
                     eprintln!(
@@ -3041,14 +3160,26 @@ impl ApplicationHandler<Event> for App {
                     self.key_action(action, key);
                 }
             }
-            WindowEvent::CursorMoved { position, .. } if self.navigation_bench.is_none() => {
+            WindowEvent::CursorMoved { position, .. }
+                if self.navigation_bench.is_none() && self.raw_smoke.is_none() =>
+            {
                 self.cursor_moved([position.x, position.y])
             }
             WindowEvent::MouseInput {
                 state,
                 button: MouseButton::Left,
                 ..
-            } if self.navigation_bench.is_none() => {
+            } if self.navigation_bench.is_none() && self.raw_smoke.is_none() => {
+                if state == ElementState::Pressed
+                    && self
+                        .renderer
+                        .as_ref()
+                        .is_some_and(|r| r.raw_button_hit(self.cursor))
+                {
+                    self.toggle_raw(false);
+                    self.drag_anchor = None;
+                    return;
+                }
                 self.drag_anchor =
                     if state == ElementState::Pressed && !self.filmstrip_click(self.cursor) {
                         Some(self.cursor)
@@ -3056,10 +3187,14 @@ impl ApplicationHandler<Event> for App {
                         None
                     };
             }
-            WindowEvent::MouseWheel { delta, .. } if self.navigation_bench.is_none() => {
+            WindowEvent::MouseWheel { delta, .. }
+                if self.navigation_bench.is_none() && self.raw_smoke.is_none() =>
+            {
                 self.scroll(delta)
             }
-            WindowEvent::PinchGesture { delta, .. } if self.navigation_bench.is_none() => {
+            WindowEvent::PinchGesture { delta, .. }
+                if self.navigation_bench.is_none() && self.raw_smoke.is_none() =>
+            {
                 self.zoom((1.0 + delta).clamp(0.2, 5.0))
             }
             WindowEvent::Focused(false) => {
@@ -3077,6 +3212,7 @@ impl ApplicationHandler<Event> for App {
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
         navigation_bench::tick(self, event_loop);
         self.smoke_tick(event_loop);
+        raw_smoke::tick(self, event_loop);
         mutation_test::tick(self, event_loop);
         if self
             .thumb_deadline
@@ -3085,16 +3221,17 @@ impl ApplicationHandler<Event> for App {
             self.thumb_deadline = None;
             self.start_thumbnails(true);
         }
-        let deadline = if self.smoke.is_some() || self.mutation_test.is_some() {
-            Some(
+        let deadline =
+            if self.smoke.is_some() || self.raw_smoke.is_some() || self.mutation_test.is_some() {
+                Some(
+                    self.thumb_deadline
+                        .map_or(Instant::now() + Duration::from_millis(50), |deadline| {
+                            deadline.min(Instant::now() + Duration::from_millis(50))
+                        }),
+                )
+            } else {
                 self.thumb_deadline
-                    .map_or(Instant::now() + Duration::from_millis(50), |deadline| {
-                        deadline.min(Instant::now() + Duration::from_millis(50))
-                    }),
-            )
-        } else {
-            self.thumb_deadline
-        };
+            };
         let deadline = match (&self.navigation_bench, deadline) {
             (Some(bench), Some(other)) => Some(bench.next.min(other)),
             (Some(bench), None) => Some(bench.next),

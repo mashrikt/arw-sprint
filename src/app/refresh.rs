@@ -81,6 +81,7 @@ impl App {
         {
             self.request_current_preserving_strip();
         }
+        self.retry_raw_failures();
         self.arm_thumbnails();
         self.message(format!(
             "Folder checked: {} added, {} removed",

@@ -2,7 +2,10 @@
 
 ARW Sprint supports Intel macOS (`x86_64-apple-darwin`) only. Its viewing path is
 TIFF metadata → largest embedded JPEG → TurboJPEG RGBA → Metal texture.
-RAW sensor development is never part of navigation.
+Normal navigation never decodes sensor data. Optional R / Shift+R RAW viewing
+uses a separate, cancellable LibRaw worker and at most one prefetched RAW neighbor.
+JPEG originals and TIFF-based DNG previews share the normal JPEG pipeline.
+See [RAW viewing](raw-viewing.md) for source identities, memory limits and validation.
 
 The app and bundle are named ARW Sprint. Existing `fastcull` command names,
 bundle identifier, and session storage location remain stable so scripts and
@@ -30,7 +33,7 @@ The [Intel audit](intel-audit.md) documents measured CPU/GPU choices and their l
 | `quick-xml` | `=0.37.5` | Validate XMP while preserving original byte spans |
 | `muda` | `=0.16.1` | Native macOS menus and accelerators |
 | `trash` | `=5.2.3` | Explicit macOS Trash operation via NSFileManager |
-| `cc` | `=1.4.7` | Desktop build dependency for the small Objective-C event bridge |
+| `cc` | `=1.4.7` | Desktop build dependency for Objective-C bridges and statically linked LibRaw |
 
 Desktop dependencies are optional behind `desktop`; `desktop` enables `turbo`.
 The default extraction build needs no third-party runtime crates. Cargo.lock
@@ -43,7 +46,9 @@ mutexes, condition variables, atomics, and Winit event-loop wakeups.
 
 The configured deployment floor is macOS 10.15. The native APIs used include
 Cocoa document-open callbacks and `renamex_np(RENAME_EXCL)` (macOS 10.12+).
-Unsafe code is denied except the small documented platform FFI boundary.
+Unsafe code is denied except the documented platform, RAW and JPEG color FFI boundaries.
+LibRaw is vendored at a pinned revision with its license notices; it adds no
+Homebrew runtime dependency. Native ColorSync converts explicitly tagged JPEGs.
 Compilation for a deployment floor does not establish runtime coverage of every
 older Intel GPU/OS combination.
 

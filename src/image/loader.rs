@@ -1,7 +1,8 @@
 use super::cache::{DecodedCache, DecodedImage, MemoryBudget, MemoryLease};
 use super::decoder::{jpeg_layout, Backend, Decoder, MAX_DECODED_BYTES};
-use crate::arw::{EmbeddedPreview, PreviewReader};
+use crate::arw::EmbeddedPreview;
 use crate::browser::prefetch::{self, Direction};
+use crate::image::source::PreviewSource;
 use std::collections::{HashSet, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard};
@@ -669,7 +670,7 @@ fn load(
     checkpoint(shared, task)?;
     let start = Instant::now();
     let mut reader =
-        PreviewReader::open(path).map_err(|error| LoadError::Failed(error.to_string()))?;
+        PreviewSource::open(path).map_err(|error| LoadError::Failed(error.to_string()))?;
     let previews = reader.find_previews().map_err(|error| {
         let warnings = reader.warnings().join("; ");
         LoadError::Failed(if warnings.is_empty() {
@@ -721,7 +722,7 @@ fn load(
         timings.decode += decode_start.elapsed();
         // take_pixels clears decoder ownership on success AND failure. Buffers
         // therefore cannot hide in sleeping workers outside memory accounting.
-        let pixels = decoder.take_pixels();
+        let mut pixels = decoder.take_pixels();
         drop(jpeg);
         drop(jpeg_lease);
         let info = match decoded {
@@ -732,6 +733,9 @@ fn load(
                 continue;
             }
         };
+        reader
+            .transform_pixels(&mut pixels, info.width, info.height)
+            .map_err(LoadError::Failed)?;
         // The decode has already paid its CPU cost. Completion admission under
         // the state lock decides whether these pixels are still useful; using a
         // strict speculative checkpoint here would throw away wanted neighbors.
@@ -744,7 +748,8 @@ fn load(
             shared.config.decode_scale,
             decoded_lease,
         )
-        .map_err(LoadError::Failed)?;
+        .map_err(LoadError::Failed)?
+        .with_orientation(reader.orientation());
         timings.total = start.elapsed();
         return Ok((Arc::new(image), timings));
     }

@@ -7,7 +7,8 @@ pub use reader::read_rating;
 pub use writer::{replace_rating, write_rating};
 
 use std::{
-    fmt, io,
+    fmt, fs, io,
+    os::unix::fs::MetadataExt,
     path::{Path, PathBuf},
 };
 
@@ -40,8 +41,89 @@ impl From<io::Error> for XmpError {
     }
 }
 
-pub fn sidecar_path(raw_path: &Path) -> PathBuf {
-    raw_path.with_extension("xmp")
+/// ARWs retain their conventional stem.xmp path. Additional formats include
+/// their complete filename so a camera's same-stem RAW and JPEG cannot share
+/// ratings or take each other's sidecar when moved into `_Rejected`.
+pub fn sidecar_path(photo_path: &Path) -> PathBuf {
+    if photo_path
+        .extension()
+        .is_some_and(|extension| extension.eq_ignore_ascii_case("arw"))
+    {
+        photo_path.with_extension("xmp")
+    } else {
+        let mut name = photo_path.as_os_str().to_os_string();
+        name.push(".xmp");
+        name.into()
+    }
+}
+
+pub(crate) fn sidecar_candidates(photo_path: &Path) -> [PathBuf; 2] {
+    let lower = sidecar_path(photo_path);
+    let upper = lower.with_extension("XMP");
+    [lower, upper]
+}
+
+/// A renamed `image.JPG.ARW` would use the same sidecar as `image.JPG`.
+/// Refuse that rare ambiguity instead of ever borrowing the other photo's XMP.
+/// Ordinary ARW names do not require any extra filesystem lookup.
+pub(crate) fn ensure_sidecar_owner(photo_path: &Path) -> io::Result<()> {
+    let check = |other: &Path| match fs::symlink_metadata(other) {
+        Ok(_) => Err(io::Error::new(
+            io::ErrorKind::AlreadyExists,
+            format!(
+                "{} and {} would share a sidecar; metadata ownership is ambiguous",
+                photo_path.display(),
+                other.display()
+            ),
+        )),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error),
+    };
+    if crate::browser::directory::is_arw(photo_path) {
+        let other = photo_path.with_extension("");
+        if crate::browser::directory::is_photo(&other) && !crate::browser::directory::is_arw(&other)
+        {
+            check(&other)?;
+        }
+    } else {
+        for extension in ["arw", "arW", "aRw", "aRW", "Arw", "ArW", "ARw", "ARW"] {
+            let mut other = photo_path.as_os_str().to_os_string();
+            other.push(".");
+            other.push(extension);
+            check(Path::new(&other))?;
+        }
+    }
+    Ok(())
+}
+
+/// Preserve the spelling of an existing uppercase sidecar on case-sensitive
+/// volumes. If both spellings identify different files, leave both untouched.
+pub(crate) fn resolved_sidecar_path(photo_path: &Path) -> Result<PathBuf, XmpError> {
+    ensure_sidecar_owner(photo_path)?;
+    let mut found = None;
+    for path in sidecar_candidates(photo_path) {
+        let metadata = match fs::symlink_metadata(&path) {
+            Ok(metadata) => metadata,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
+            Err(error) => return Err(error.into()),
+        };
+        if !metadata.file_type().is_file() {
+            return Err(XmpError::Invalid(
+                "sidecar must be a regular file, not a symlink",
+            ));
+        }
+        let identity = (metadata.dev(), metadata.ino());
+        if let Some((_, previous)) = &found {
+            if *previous != identity {
+                return Err(XmpError::Invalid(
+                    "both .xmp and .XMP sidecars exist; ownership is ambiguous",
+                ));
+            }
+        } else {
+            found = Some((path, identity));
+        }
+    }
+    Ok(found.map_or_else(|| sidecar_path(photo_path), |(path, _)| path))
 }
 
 pub(crate) fn checked_rating(rating: i8) -> Result<i8, XmpError> {

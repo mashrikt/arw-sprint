@@ -8,7 +8,6 @@ pub mod app;
 pub mod arw;
 pub mod browser;
 pub mod image;
-#[cfg(feature = "desktop")]
 pub mod metadata;
 #[cfg(feature = "desktop")]
 pub mod renderer;

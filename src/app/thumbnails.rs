@@ -1,10 +1,11 @@
 //! One utility-priority decoder for visible and nearby filmstrip thumbnails.
-//! No main-image eviction, full-preview fallback, or unbounded result queue.
+//! No main-image eviction, RAW decode, or unbounded result queue.
 use crate::{
-    arw::{EmbeddedPreview, PreviewReader},
+    arw::EmbeddedPreview,
     image::{
         cache::{DecodedImage, MemoryBudget},
         decoder::{jpeg_layout, Backend, Decoder},
+        source::PreviewSource,
     },
 };
 use std::{
@@ -198,16 +199,15 @@ fn candidates(previews: Vec<EmbeddedPreview>) -> Vec<EmbeddedPreview> {
     result
 }
 
-/// Native reduced IDCT bounds every decoded thumbnail to 192 pixels per side.
-/// The usual 160x120 Sony thumbnail retains its full resolution. The source
-/// limit remains 512 pixels, so this never becomes a full-preview fallback.
+/// Preserve Sony's small embedded thumbnails. Direct JPEGs without an EXIF
+/// thumbnail use reduced IDCT first, then a bounded 192-pixel resample.
 fn output_layout(width: u32, height: u32) -> (u32, u32, u32) {
-    let denominator = [1, 2, 4]
+    let denominator = [1, 2, 4, 8]
         .into_iter()
         .find(|&scale| {
             width.div_ceil(scale) <= MAX_OUTPUT_EDGE && height.div_ceil(scale) <= MAX_OUTPUT_EDGE
         })
-        .unwrap_or(4);
+        .unwrap_or(8);
     (
         width.div_ceil(denominator),
         height.div_ceil(denominator),
@@ -215,11 +215,49 @@ fn output_layout(width: u32, height: u32) -> (u32, u32, u32) {
     )
 }
 
+fn thumbnail_size(width: u32, height: u32) -> (u32, u32) {
+    let edge = width.max(height);
+    if edge <= MAX_OUTPUT_EDGE {
+        return (width, height);
+    }
+    (
+        ((u64::from(width) * u64::from(MAX_OUTPUT_EDGE)) / u64::from(edge)).max(1) as u32,
+        ((u64::from(height) * u64::from(MAX_OUTPUT_EDGE)) / u64::from(edge)).max(1) as u32,
+    )
+}
+
+fn resize_rgba(pixels: &[u8], width: u32, height: u32, out_width: u32, out_height: u32) -> Vec<u8> {
+    let mut output = vec![0; out_width as usize * out_height as usize * 4];
+    // Bilinear sampling of the reduced-IDCT image avoids a full-size RGB
+    // buffer. At most 192x192 output pixels are evaluated on the utility worker.
+    for y in 0..out_height {
+        let sy = ((f64::from(y) + 0.5) * f64::from(height) / f64::from(out_height) - 0.5).max(0.0);
+        let y0 = (sy as u32).min(height - 1);
+        let y1 = (y0 + 1).min(height - 1);
+        let fy = sy - f64::from(y0);
+        for x in 0..out_width {
+            let sx =
+                ((f64::from(x) + 0.5) * f64::from(width) / f64::from(out_width) - 0.5).max(0.0);
+            let x0 = (sx as u32).min(width - 1);
+            let x1 = (x0 + 1).min(width - 1);
+            let fx = sx - f64::from(x0);
+            for c in 0..4usize {
+                let sample = |x, y| f64::from(pixels[((y * width + x) * 4) as usize + c]);
+                let top = sample(x0, y0) * (1.0 - fx) + sample(x1, y0) * fx;
+                let bottom = sample(x0, y1) * (1.0 - fx) + sample(x1, y1) * fx;
+                output[((y * out_width + x) * 4) as usize + c] =
+                    (top * (1.0 - fy) + bottom * fy).round() as u8;
+            }
+        }
+    }
+    output
+}
+
 /// Lazy native handles avoid rebuilding a decoder when files use different
 /// thumbnail sizes. Completed RGBA allocations always move out of the handle.
 #[derive(Default)]
 struct ThumbnailDecoders {
-    decoders: [Option<Result<Decoder, String>>; 3],
+    decoders: [Option<Result<Decoder, String>>; 4],
 }
 impl ThumbnailDecoders {
     fn get(&mut self, denominator: u32) -> Result<&mut Decoder, String> {
@@ -227,6 +265,7 @@ impl ThumbnailDecoders {
             1 => 0,
             2 => 1,
             4 => 2,
+            8 => 3,
             _ => return Err("unsupported thumbnail reduction".into()),
         };
         self.decoders[index]
@@ -273,12 +312,22 @@ fn load(
 ) -> Result<Arc<DecodedImage>, LoadFailure> {
     checkpoint(shared, task)?;
     let stage = Instant::now();
-    let mut reader = PreviewReader::open(&task.path).map_err(unavailable)?;
-    let previews = reader.find_previews().map_err(unavailable)?;
+    let mut reader = PreviewSource::open(&task.path).map_err(unavailable)?;
+    let previews = reader.find_thumbnail_previews().map_err(unavailable)?;
     *orientation = reader.orientation();
     timings.parse = stage.elapsed();
     let mut last_error = "No embedded thumbnail within 512 pixels and 256 KiB".to_string();
-    for preview in candidates(previews) {
+    let full_jpeg = reader
+        .can_reduce_main_for_thumbnail()
+        .then(|| previews.first().cloned())
+        .flatten();
+    let mut previews = candidates(previews);
+    if let Some(full) = full_jpeg {
+        if !previews.contains(&full) {
+            previews.push(full);
+        }
+    }
+    for preview in previews {
         checkpoint(shared, task)?;
         let width = preview.width.unwrap_or(0);
         let height = preview.height.unwrap_or(0);
@@ -330,7 +379,7 @@ fn load(
         timings.decode += stage.elapsed();
         // Clear retained decoder buffers on success AND failure before another
         // job, so an idle worker never hides an allocation outside the budget.
-        let pixels = decoder.take_pixels();
+        let mut pixels = decoder.take_pixels();
         drop(jpeg);
         drop(jpeg_lease);
         let decoded = match decoded {
@@ -346,10 +395,31 @@ fn load(
             return Err(LoadFailure::Failed(ThumbnailFailure::Deferred));
         }
         checkpoint(shared, task)?;
+        let (final_width, final_height) = thumbnail_size(decoded.width, decoded.height);
+        if (final_width, final_height) != (decoded.width, decoded.height) {
+            let bytes = final_width as usize * final_height as usize * 4;
+            let final_lease = shared
+                .budget
+                .try_reserve(bytes)
+                .ok_or(LoadFailure::Failed(ThumbnailFailure::Deferred))?;
+            let resized = resize_rgba(
+                &pixels,
+                decoded.width,
+                decoded.height,
+                final_width,
+                final_height,
+            );
+            pixels = resized;
+            decoded_lease = final_lease;
+        }
+        reader
+            .transform_pixels(&mut pixels, final_width, final_height)
+            .map_err(unavailable)?;
+        checkpoint(shared, task)?;
         let image = DecodedImage::new(
             pixels,
-            decoded.width,
-            decoded.height,
+            final_width,
+            final_height,
             width,
             height,
             scale,
@@ -759,6 +829,70 @@ mod tests {
         worker.acknowledge(1, 0);
         let event = next(&events);
         assert!(event.result.is_ok());
+        drop(event);
+        drop(worker);
+        assert_eq!(budget.used(), 0);
+    }
+    #[test]
+    fn jpeg_and_dng_without_small_thumbnails_use_bounded_reduced_decode() {
+        let mut compressor = turbojpeg::Compressor::new().unwrap();
+        let pixels = vec![128; 1600 * 800 * 3];
+        let jpeg = compressor
+            .compress_to_vec(turbojpeg::Image {
+                pixels: &pixels,
+                width: 1600,
+                pitch: 1600 * 3,
+                height: 800,
+                format: turbojpeg::PixelFormat::RGB,
+            })
+            .unwrap();
+        for extension in ["JPEG", "DNG"] {
+            let mut fixture = Fixture::new(std::slice::from_ref(&jpeg), 1);
+            let path = fixture.directory.join(format!("photo.{extension}"));
+            if extension == "JPEG" {
+                fs::write(&path, &jpeg).unwrap();
+            } else {
+                fs::rename(&fixture.path, &path).unwrap();
+            }
+            fixture.path = path;
+            let budget = MemoryBudget::new(1024 * 1024);
+            let (worker, events) = create(Arc::clone(&budget));
+            worker.request(1, 1, vec![(0, fixture.path.clone())]);
+            let event = next(&events);
+            let image = event.result.as_ref().unwrap();
+            assert_eq!((image.width, image.height), (192, 96));
+            assert_eq!(image.scale, 8);
+            assert_eq!(budget.used(), image.bytes());
+            assert!(image
+                .pixels
+                .chunks_exact(4)
+                .all(|p| p[3] == 255 && (127..=129).contains(&p[0])));
+            drop(event);
+            drop(worker);
+            assert_eq!(budget.used(), 0);
+        }
+    }
+
+    #[test]
+    fn jpeg_exif_thumbnail_is_preferred_over_main_image_fallback() {
+        let thumbnail = jpeg(8, 8);
+        let mut fixture = Fixture::new(&[thumbnail], 6);
+        let tiff = fs::read(&fixture.path).unwrap();
+        let full = jpeg(1200, 800);
+        let mut bytes = vec![0xff, 0xd8, 0xff, 0xe1];
+        bytes.extend_from_slice(&((tiff.len() + 8) as u16).to_be_bytes());
+        bytes.extend_from_slice(b"Exif\0\0");
+        bytes.extend_from_slice(&tiff);
+        bytes.extend_from_slice(&full[2..]);
+        fixture.path = fixture.directory.join("photo.jpg");
+        fs::write(&fixture.path, bytes).unwrap();
+        let budget = MemoryBudget::new(1024 * 1024);
+        let (worker, events) = create(Arc::clone(&budget));
+        worker.request(1, 1, vec![(0, fixture.path.clone())]);
+        let event = next(&events);
+        let image = event.result.as_ref().unwrap();
+        assert_eq!((image.width, image.height), (8, 8));
+        assert_eq!(event.orientation, 6);
         drop(event);
         drop(worker);
         assert_eq!(budget.used(), 0);

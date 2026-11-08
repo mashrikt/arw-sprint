@@ -1,7 +1,7 @@
 //! Reversible, no-clobber moves into a photo folder's `_Rejected` subdirectory.
-//! RAW and XMP bytes are never read or rewritten. Two-file moves use an
-//! exclusive sidecar-first rename with rollback if the RAW rename fails. Undo
-//! verifies the RAW identity and preserves its current paired metadata, including
+//! Photo and XMP bytes are never read or rewritten. Two-file moves use an
+//! exclusive sidecar-first rename with rollback if the photo rename fails. Undo
+//! verifies the photo identity and preserves its current paired metadata, including
 //! sidecars atomically edited or created while the photo was in `_Rejected`.
 use std::{
     ffi::OsString,
@@ -51,7 +51,7 @@ pub struct MoveRecord {
 #[derive(Debug)]
 pub struct MoveError {
     pub message: String,
-    /// Current known location of this RAW's original inode. None means another
+    /// Current known location of this photo's original inode. None means another
     /// process removed/replaced it or the locations can no longer be inspected.
     pub raw_path: Option<PathBuf>,
     pub sidecar_path: Option<PathBuf>,
@@ -64,7 +64,7 @@ impl fmt::Display for MoveError {
         if self.partial {
             write!(
                 f,
-                "; RAW location: {}",
+                "; photo location: {}",
                 self.raw_path.as_ref().map_or_else(
                     || "unknown (file changed externally)".to_owned(),
                     |path| path.display().to_string(),
@@ -138,8 +138,9 @@ fn vacant(path: &Path) -> io::Result<()> {
 }
 
 fn matching_sidecar(raw: &Path) -> io::Result<Option<(PathBuf, FileId)>> {
+    crate::xmp::ensure_sidecar_owner(raw)?;
     let mut found: Option<(PathBuf, FileId)> = None;
-    for path in [raw.with_extension("xmp"), raw.with_extension("XMP")] {
+    for path in crate::xmp::sidecar_candidates(raw) {
         let Some(metadata) = metadata_if_present(&path)? else {
             continue;
         };
@@ -165,8 +166,11 @@ fn matching_sidecar(raw: &Path) -> io::Result<Option<(PathBuf, FileId)>> {
 
 fn vacant_pair(raw: &Path) -> io::Result<()> {
     vacant(raw)?;
-    vacant(&raw.with_extension("xmp"))?;
-    vacant(&raw.with_extension("XMP"))
+    crate::xmp::ensure_sidecar_owner(raw)?;
+    for path in crate::xmp::sidecar_candidates(raw) {
+        vacant(&path)?;
+    }
+    Ok(())
 }
 
 fn destination_for(raw: &Path, folder: &Path, attempts: usize) -> io::Result<PathBuf> {
@@ -197,7 +201,7 @@ fn destination_for(raw: &Path, folder: &Path, attempts: usize) -> io::Result<Pat
     }
     Err(io::Error::new(
         io::ErrorKind::AlreadyExists,
-        "No unused RAW/XMP filename pair is available in _Rejected",
+        "No unused photo/XMP filename pair is available in _Rejected",
     ))
 }
 
@@ -246,12 +250,10 @@ fn initial_error(raw: &Path, error: impl fmt::Display) -> MoveError {
 }
 
 fn prepare(raw: &Path) -> io::Result<MoveRecord> {
-    if !raw
-        .extension()
-        .and_then(|extension| extension.to_str())
-        .is_some_and(|extension| extension.eq_ignore_ascii_case("arw"))
-    {
-        return Err(invalid("Only an ARW photograph can be moved to _Rejected"));
+    if !crate::browser::directory::is_photo(raw) {
+        return Err(invalid(
+            "Only a supported photograph can be moved to _Rejected",
+        ));
     }
     let identity = regular_file(raw)?;
     let parent = raw
@@ -282,7 +284,7 @@ fn prepare(raw: &Path) -> io::Result<MoveRecord> {
         source: raw.to_path_buf(),
         sidecar: sidecar.map(|(source, identity)| SidecarMove {
             source,
-            destination: destination.with_extension("xmp"),
+            destination: crate::xmp::sidecar_path(&destination),
             identity,
         }),
         destination,
@@ -361,7 +363,7 @@ fn transfer(
         .and_then(|()| unchanged_file(source, record.identity))
         .and_then(|()| rename(source, destination));
     if let Err(error) = raw_result {
-        let mut message = format!("Could not move RAW: {error}");
+        let mut message = format!("Could not move photo: {error}");
         if let Some((original, moved, identity)) = sidecar {
             if let Err(rollback) = parents_unchanged()
                 .and_then(|()| unchanged_file(moved, identity))
@@ -389,13 +391,13 @@ fn transfer(
         })
 }
 
-/// Move a RAW and its matching XMP into `_Rejected`, preserving existing files.
+/// Move a photo and its matching XMP into `_Rejected`, preserving existing files.
 pub fn move_photo(path: &Path) -> Result<MoveRecord, MoveError> {
     move_with(path, &mut crate::platform::rename_exclusive)
 }
 
 /// Recognize a complete external return without changing any file. A pathname
-/// alone is insufficient: a replacement RAW or an incomplete RAW/XMP return
+/// alone is insufficient: a replacement photo or an incomplete photo/XMP return
 /// must not release the worker's write protection for the original location.
 pub(super) fn externally_restored(record: &MoveRecord) -> io::Result<()> {
     unchanged_file(&record.source, record.identity)?;
@@ -417,7 +419,7 @@ pub(super) fn externally_restored(record: &MoveRecord) -> io::Result<()> {
         unchanged_file(&sidecar.source, sidecar.identity)?;
         if current_sidecar.map(|(_, identity)| identity) != Some(sidecar.identity) {
             return Err(invalid(
-                "The original XMP sidecar has not returned with its RAW",
+                "The original XMP sidecar has not returned with its photo",
             ));
         }
     }
@@ -433,10 +435,10 @@ fn move_with(
     Ok(record)
 }
 
-/// Undo only this exact RAW move, carrying its current matching metadata back.
+/// Undo only this exact photo move, carrying its current matching metadata back.
 /// Sidecar editors normally replace XMP files atomically, so the original XMP
 /// inode cannot identify the latest metadata. Snapshot the current sidecar only
-/// after verifying the RAW, then apply the same identity checks and exclusive
+/// after verifying the photo, then apply the same identity checks and exclusive
 /// rollback to that snapshot. Original filenames are never overwritten.
 pub fn restore_photo(record: &MoveRecord) -> Result<(), MoveError> {
     // An old undo entry can survive a complete Finder restore. Treat it as
@@ -458,7 +460,7 @@ pub fn restore_photo(record: &MoveRecord) -> Result<(), MoveError> {
     let mut snapshot = record.clone();
     snapshot.sidecar = current.map(|(destination, identity)| SidecarMove {
         source: record.sidecar.as_ref().map_or_else(
-            || record.source.with_extension("xmp"),
+            || crate::xmp::sidecar_path(&record.source),
             |sidecar| sidecar.source.clone(),
         ),
         destination,
@@ -612,6 +614,127 @@ mod tests {
         restore_photo(&record).unwrap();
         assert_eq!(fs::read(&fixture.raw).unwrap(), RAW);
         assert!(!fixture.raw.with_extension("xmp").exists());
+    }
+
+    #[test]
+    fn same_stem_other_formats_move_only_the_selected_photo_and_its_sidecar() {
+        let fixture = Fixture::new(true);
+        let raw_id = regular_file(&fixture.raw).unwrap();
+        let stem_xmp = fixture.raw.with_extension("xmp");
+        let stem_xmp_id = regular_file(&stem_xmp).unwrap();
+        let photos = ["JPG", "jPeG", "DnG"].map(|extension| fixture.raw.with_extension(extension));
+        for photo in &photos {
+            fs::write(photo, b"separate original photo").unwrap();
+            fs::write(crate::xmp::sidecar_path(photo), XMP).unwrap();
+        }
+        for photo in &photos {
+            let identity = regular_file(photo).unwrap();
+            let sidecar = crate::xmp::sidecar_path(photo);
+            let record = move_photo(photo).unwrap();
+            assert_eq!(record.destination.file_name(), photo.file_name());
+            assert_eq!(regular_file(&record.destination).unwrap(), identity);
+            assert_eq!(record.sidecar.as_ref().unwrap().source, sidecar);
+            assert_eq!(
+                record.sidecar.as_ref().unwrap().destination,
+                crate::xmp::sidecar_path(&record.destination)
+            );
+            assert!(!photo.exists());
+            assert!(!sidecar.exists());
+            assert_eq!(regular_file(&fixture.raw).unwrap(), raw_id);
+            assert_eq!(regular_file(&stem_xmp).unwrap(), stem_xmp_id);
+            for other in photos.iter().filter(|other| *other != photo) {
+                assert_eq!(fs::read(other).unwrap(), b"separate original photo");
+                assert_eq!(fs::read(crate::xmp::sidecar_path(other)).unwrap(), XMP);
+            }
+            restore_photo(&record).unwrap();
+            assert_eq!(regular_file(photo).unwrap(), identity);
+            assert_eq!(fs::read(photo).unwrap(), b"separate original photo");
+            assert_eq!(fs::read(sidecar).unwrap(), XMP);
+        }
+        assert_eq!(fs::read(&fixture.raw).unwrap(), RAW);
+        assert_eq!(fs::read(stem_xmp).unwrap(), XMP);
+    }
+
+    #[test]
+    fn qualified_uppercase_conflicts_choose_new_names_and_block_undo_safely() {
+        let fixture = Fixture::new(true);
+        let photo = fixture.raw.with_extension("JPG");
+        let upper = crate::xmp::sidecar_path(&photo).with_extension("XMP");
+        fs::write(&photo, b"original JPEG").unwrap();
+        fs::write(&upper, XMP).unwrap();
+        let rejected = fixture.directory.join(REJECTED_FOLDER);
+        fs::create_dir(&rejected).unwrap();
+        fs::write(rejected.join("DSC00001.JPG"), b"older JPEG").unwrap();
+        fs::write(rejected.join("DSC00001-2.JPG.XMP"), b"orphan qualified XMP").unwrap();
+        fs::write(rejected.join("DSC00001-3.xmp"), b"unrelated RAW sidecar").unwrap();
+        let record = move_photo(&photo).unwrap();
+        assert_eq!(record.destination, rejected.join("DSC00001-3.JPG"));
+        assert_eq!(
+            record.sidecar.as_ref().unwrap().destination,
+            rejected.join("DSC00001-3.JPG.xmp")
+        );
+        fs::write(&upper, b"new external XMP").unwrap();
+        assert!(restore_photo(&record).is_err());
+        assert_eq!(fs::read(&upper).unwrap(), b"new external XMP");
+        assert_eq!(fs::read(&record.destination).unwrap(), b"original JPEG");
+        fs::remove_file(&upper).unwrap();
+        restore_photo(&record).unwrap();
+        assert_eq!(fs::read(&upper).unwrap(), XMP);
+        assert_eq!(fs::read(photo).unwrap(), b"original JPEG");
+        assert_eq!(
+            fs::read(rejected.join("DSC00001.JPG")).unwrap(),
+            b"older JPEG"
+        );
+        assert_eq!(
+            fs::read(rejected.join("DSC00001-2.JPG.XMP")).unwrap(),
+            b"orphan qualified XMP"
+        );
+        assert_eq!(
+            fs::read(rejected.join("DSC00001-3.xmp")).unwrap(),
+            b"unrelated RAW sidecar"
+        );
+        assert_eq!(fs::read(fixture.raw.with_extension("xmp")).unwrap(), XMP);
+    }
+
+    #[test]
+    fn sidecar_created_for_rejected_dng_returns_without_touching_arw_sidecar() {
+        let fixture = Fixture::new(true);
+        let photo = fixture.raw.with_extension("DNG");
+        fs::write(&photo, b"original DNG").unwrap();
+        let record = move_photo(&photo).unwrap();
+        assert!(record.sidecar.is_none());
+        assert_eq!(fs::read(fixture.raw.with_extension("xmp")).unwrap(), XMP);
+        crate::xmp::write_rating(&record.destination, 4).unwrap();
+        restore_photo(&record).unwrap();
+        assert_eq!(crate::xmp::read_rating(&photo).unwrap(), Some(4));
+        assert_eq!(fs::read(&photo).unwrap(), b"original DNG");
+        assert_eq!(fs::read(fixture.raw.with_extension("xmp")).unwrap(), XMP);
+        assert!(!crate::xmp::sidecar_path(&record.destination).exists());
+    }
+
+    #[test]
+    fn renamed_arw_sidecar_ownership_is_checked_before_move_and_destination_choice() {
+        let fixture = Fixture::new(false);
+        let jpeg = fixture.raw.with_extension("JPG");
+        let renamed_arw = fixture.directory.join("DSC00001.JPG.aRw");
+        fs::write(&jpeg, b"JPEG original").unwrap();
+        fs::write(&renamed_arw, RAW).unwrap();
+        let shared = crate::xmp::sidecar_path(&jpeg);
+        fs::write(&shared, XMP).unwrap();
+        assert!(move_photo(&jpeg).is_err());
+        assert!(move_photo(&renamed_arw).is_err());
+        assert_eq!(fs::read(&shared).unwrap(), XMP);
+        let rejected = fixture.directory.join(REJECTED_FOLDER);
+        fs::create_dir(&rejected).unwrap();
+        fs::rename(&renamed_arw, rejected.join("DSC00001.JPG.aRw")).unwrap();
+        // With the source ambiguity resolved, choose a new destination that
+        // also cannot claim the rejected ARW's currently absent sidecar.
+        let record = move_photo(&jpeg).unwrap();
+        assert_eq!(record.destination, rejected.join("DSC00001-2.JPG"));
+        assert_eq!(fs::read(rejected.join("DSC00001.JPG.aRw")).unwrap(), RAW);
+        restore_photo(&record).unwrap();
+        assert_eq!(fs::read(jpeg).unwrap(), b"JPEG original");
+        assert_eq!(fs::read(shared).unwrap(), XMP);
     }
 
     #[test]

@@ -2,3 +2,5 @@
 mod exif;
 
 pub use exif::{read_exif, ExifMetadata, MetadataError};
+
+pub(crate) use exif::read_jpeg_header;

@@ -1,4 +1,4 @@
-use crate::browser::directory::{is_arw, natural_filename_cmp};
+use crate::browser::directory::{is_photo, natural_filename_cmp};
 use std::{
     path::PathBuf,
     sync::{
@@ -21,7 +21,7 @@ pub struct ScanResult {
 type ScanCallback = Arc<dyn Fn(Result<ScanResult, (u64, String)>) + Send + Sync>;
 
 /// Provisional enumeration order must not replace the final first photo or an
-/// explicitly opened ARW. Only an intentional navigation preserves selection.
+/// explicitly opened photo. Only an intentional navigation preserves selection.
 pub fn selected_index(
     files: &[PathBuf],
     requested: Option<&PathBuf>,
@@ -50,7 +50,7 @@ pub fn start(path: PathBuf, session: u64, current: Arc<AtomicU64>, wake: ScanCal
                 let path = std::path::absolute(&path).map_err(|e| e.to_string())?;
                 let metadata =
                     std::fs::metadata(&path).map_err(|e| format!("{}: {e}", path.display()))?;
-                let requested = if metadata.is_file() && is_arw(&path) {
+                let requested = if metadata.is_file() && is_photo(&path) {
                     Some(path.clone())
                 } else {
                     None
@@ -62,7 +62,7 @@ pub fn start(path: PathBuf, session: u64, current: Arc<AtomicU64>, wake: ScanCal
                 } else if metadata.is_dir() {
                     path.clone()
                 } else {
-                    return Err("Open a folder or a Sony .ARW photograph.".into());
+                    return Err("Open a folder or an ARW, DNG, or JPEG photograph.".into());
                 };
                 let mut files = Vec::new();
                 let mut early_sent = false;
@@ -72,7 +72,7 @@ pub fn start(path: PathBuf, session: u64, current: Arc<AtomicU64>, wake: ScanCal
                     }
                     let entry = entry.map_err(|e| e.to_string())?;
                     let path = entry.path();
-                    if is_arw(&path) && entry.file_type().map_err(|e| e.to_string())?.is_file() {
+                    if is_photo(&path) && entry.file_type().map_err(|e| e.to_string())?.is_file() {
                         files.push(path);
                     }
                     if !early_sent
